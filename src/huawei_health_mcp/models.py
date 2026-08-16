@@ -111,3 +111,44 @@ class ActivityDetail(BaseModel):
     active_time: Optional[int] = None  # 秒
     time_zone: Optional[str] = None
     details: list[DetailCollector] = Field(default_factory=list)
+
+class FieldStats(BaseModel):
+    """单个 fieldName 在一个 collector 内的确定性统计（Phase 6.3）。
+
+    min/max/first/last 保留原始类型（int 字段保持 int），avg 恒为 float。
+    """
+
+    field_name: str
+    count: int
+    min_value: float | int
+    max_value: float | int
+    avg_value: float
+    first_value: Optional[float | int] = None
+    last_value: Optional[float | int] = None
+
+
+class CollectorSummary(BaseModel):
+    """一个 dataCollector 的统计摘要。
+
+    data_type_name 从首个 samplePoint 推断（collector 本身无该字段）；
+    时间范围优先用 collector 自带时间，缺失时退回首末 sample timestamp。
+    """
+
+    data_collector_id: Optional[str] = None
+    data_type_name: Optional[str] = None
+    sample_count: int = 0
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    fields: list[FieldStats] = Field(default_factory=list)
+
+
+class TrainingSummary(BaseModel):
+    """单次训练的确定性统计摘要（无 AI 推断，全部由采样数据聚合）。"""
+
+    activity_id: Optional[str] = None
+    activity_type: Optional[int] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    active_time: Optional[int] = None  # 单位疑问见 PROJECT_STATE Known Issues #1
+    time_zone: Optional[str] = None
+    collectors: list[CollectorSummary] = Field(default_factory=list)

@@ -2,7 +2,7 @@
 
 本文件负责：
 - 创建 FastMCP 服务
-- 注册 MCP 工具（health_check、get_recent_activities、get_activity_detail）
+- 注册 MCP 工具（health_check、get_recent_activities、get_activity_detail、get_training_summary）
 - 把 MCP 工具接到现有的 HTCClient（数据获取层）与 parser（解析层）
 
 设计原则：
@@ -20,8 +20,9 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from .analysis import summarize_activity_detail
 from .client import HTCClient, HTCClientError
-from .models import ActivityDetail, ActivityRecord
+from .models import ActivityDetail, ActivityRecord, TrainingSummary
 from .parser import parse_activity_detail, parse_activity_record
 
 # 创建一个 MCP 服务实例。
@@ -254,6 +255,40 @@ def get_activity_detail(activity_id: str) -> dict:
         client.close()
     # 转成 JSON 友好的 dict，与 get_recent_activities 的序列化风格一致
     return detail.model_dump(mode="json")
+
+@mcp.tool()
+def get_training_summary(activity_id: str) -> dict:
+    """获取单次训练的统计摘要（确定性聚合，无 AI 推断）。
+
+    按 activity_id 定位训练并获取高频采样后，对每个数据采集器输出：
+    样本数、时间范围，以及每个数值字段（如心率 bpm、速度 speed、
+    位置 latitude/longitude 等）的最小值 / 最大值 / 平均值 /
+    首值 / 末值。适合快速了解一次训练的强度与数据覆盖情况，
+    无需拉取全部原始采样点。
+
+    参数：
+        activity_id: 训练记录 id，来自 get_recent_activities。
+
+    返回：
+        TrainingSummary 结构：活动元信息 + collectors[] 统计数组。
+        某个采集器无数据时其 fields 为空数组，属正常情况。
+
+    错误：
+        找不到该 activity_id 时抛 ValueError；认证失效或 HTTP 错误
+        以 HTCClientError 族异常清晰报告。
+
+    说明：
+        认证信息从环境变量读取；本项目不实现登录，
+        也不猜测或绕过任何认证机制。
+    """
+    client = create_htc_client()
+    try:
+        detail = fetch_activity_detail(client, activity_id=activity_id)
+    finally:
+        # 无论成功还是报错，都确保底层 httpx 客户端被关闭
+        client.close()
+    summary: TrainingSummary = summarize_activity_detail(detail)
+    return summary.model_dump(mode="json")
 
 if __name__ == "__main__":
     # 默认以 stdio（标准输入输出）方式启动，这是 MCP 的标准通信方式。

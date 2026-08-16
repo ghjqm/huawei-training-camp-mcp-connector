@@ -5,7 +5,7 @@
 
 ## Current Phase
 
-Phase 6.3（训练汇总统计：TrainingSummary 分析层 + get_training_summary tool）— 进行中
+Phase 6.3（训练汇总统计：analysis.py + get_training_summary tool）— **PASS**
 
 ## Completed
 
@@ -15,7 +15,8 @@ Phase 6.3（训练汇总统计：TrainingSummary 分析层 + get_training_summar
 - Phase 6.2-A/B：代码审计；Detail domain model（ActivityDetail/DetailCollector/DetailSamplePoint）+ timestamp contract + synthetic tests
 - Phase 6.2-C：parse_activity_detail()（真实数据修正：detail 顶层时间戳为毫秒）；真实 JSON 离线解析成功
 - Phase 6.2-D：get_activity_detail MCP tool（id 两步解析）+ Mock 全链路 + 真实数据离线端到端验证
-- Git checkpoint：仓库已初始化并完成首次提交
+- Git checkpoint：仓库已初始化并完成首次提交（4110281）
+- Phase 6.3：analysis.py（summarize_activity_detail：确定性聚合）+ TrainingSummary/CollectorSummary/FieldStats 模型 + get_training_summary tool + 10 项测试；真实 JSON 离线统计验证成功（HR 93-188 avg 164.7 / speed 0-3.9 / altitude 1488.9-1500.5 / GCT 262-316ms）
 
 ## Code Status
 
@@ -23,16 +24,17 @@ Phase 6.3（训练汇总统计：TrainingSummary 分析层 + get_training_summar
 src/huawei_health_mcp/
 ├── __init__.py   包标识 0.1.0
 ├── client.py     HTCClient：query_activity_records / query_activity_detail，只返回原始 JSON
-├── models.py     ActivityRecord / SamplePoint / ActivityDetail / DetailCollector / DetailSamplePoint
+├── models.py     ActivityRecord / SamplePoint / ActivityDetail / DetailCollector / DetailSamplePoint / TrainingSummary 族
 ├── parser.py     parse_activity_record（ms 契约）/ parse_activity_detail（顶层 ms + collector/sample ns）
-└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail
+├── analysis.py   summarize_activity_detail：ActivityDetail → TrainingSummary（确定性统计，无 AI）
+└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail / get_training_summary
 scripts/test_real_htc.py   人工真实请求脚本（list / detail 两模式，凭证只从环境变量）
-tests/   6 个测试文件 + 2 个 synthetic fixtures（无真实用户数据）
+tests/   8 个测试文件 + 2 个 synthetic fixtures（无真实用户数据）
 ```
 
 ## Tests
 
-`python -m pytest`（项目根，.venv）→ **51 passed**
+`python -m pytest`（项目根，.venv）→ **61 passed**（parser 5 + client 8 + tools 4 + detail models 10 + detail parser 17 + detail tool 7 + analysis 8 + summary tool 2）
 
 ## Architecture Decisions
 
@@ -78,6 +80,7 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 2. DETAIL_LOOKUP_LIMIT=50：只扫最近 30 天最多 50 条，过旧活动无法按 id 定位
 3. 真实 schema 基于有限真实响应（1 活动 / 6 collectors）验证，未验证字段语义不算确定事实
 4. samplePoint endTime 丢弃（真实数据 startTime==endTime，暂无损失）
+5. 真实数据观察（非 bug）：location 采样内嵌 altitude 字段恒 0，真实海拔以 altitude collector 为准；posture 部分字段（swing_angle/hang_time 等）在真实样本中恒 0
 
 ## Risks
 
@@ -86,8 +89,8 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Next Action
 
-Phase 6.3：新建 analysis.py（summarize_activity_detail：对每个 collector 输出样本数/时间范围/各 fieldName 的 min-max-avg 统计）+ models.py 轻量 TrainingSummary 族 + server.py get_training_summary tool + synthetic 测试 + 真实 JSON 离线验证。
+下一 Phase 候选（按最小增量原则）：1) 用户持凭证在真实 MCP 客户端验收 get_activity_detail / get_training_summary（需人工，无法自动）；2) get_recent_activities 暴露 lookback_days 参数（扩大可查询窗口，顺带缓解 Known Issue #2）；3) 业务语义层：HR zones / 配速区间（需 Manager 先定区间标准）。
 
 ## Last Updated
 
-2026-08-16（Git checkpoint 时）
+2026-08-16（Phase 6.3 完成时）
