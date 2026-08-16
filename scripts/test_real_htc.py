@@ -7,6 +7,8 @@ pytest 中的全部测试（tests/）仍然使用 MockTransport，不访问真�
     python scripts/test_real_htc.py detail           # 详情模式：单次训练高频 detail schema 勘探
     python scripts/test_real_htc.py period           # 周期模式：最近 7 天训练周期聚合验证
     python scripts/test_real_htc.py comparison [N]   # 对比模式：最近 N 天 vs 之前 N 天（默认 7）
+    python scripts/test_real_htc.py trend [N]        # 趋势模式：最近 N 个滚动周窗口训练趋势（默认 4）
+    python scripts/test_real_htc.py trend-delta [N]  # 环比模式：相邻周 older→newer 环比（默认 4）
 
 前置条件（环境变量 -> HTTP 请求头，映射来自用户确认的浏览器成功请求）：
     HTC_AUTHORIZATION -> Authorization: Bearer <敏感值>
@@ -60,6 +62,8 @@ from src.huawei_health_mcp.server import (  # noqa: E402
     _default_time_range,
     _extract_activity_list,
     fetch_period_comparison,
+    fetch_weekly_trend,
+    fetch_weekly_trend_delta,
 )
 
 # 列表模式：只查最近 7 天、最多 5 条，不请求过大历史范围
@@ -68,6 +72,10 @@ LIMIT = 5
 
 # 对比模式：两个窗口各取的条数上限（与 MCP tool 默认一致）
 MAX_LIST_LIMIT_FOR_COMPARISON = 100
+
+# 趋势模式：周窗口数缺省（与 MCP tool 默认一致）；条数上限同对比模式
+DEFAULT_TREND_WEEKS = 4
+MAX_LIST_LIMIT_FOR_TREND = 100
 
 # 真实响应保存位置（.gitignore 已忽略 data_temp/，不会进入 Git）
 OUTPUT_FILE = PROJECT_ROOT / "data_temp" / "real_activity_records.json"
@@ -381,6 +389,115 @@ def run_comparison_mode(headers: dict[str, str], argv: list[str]) -> int:
     return 0
 
 
+def _parse_weeks(argv: list[str]) -> int | None:
+    """解析趋势模式的可选 weeks 参数（缺省 4；非整数打印错误并返回 None）。"""
+    if len(argv) <= 2:
+        return DEFAULT_TREND_WEEKS
+    try:
+        return int(argv[2])
+    except ValueError:
+        print(f"Invalid weeks: {argv[2]!r} (expected an integer)")
+        return None
+
+
+def _fmt_local(dt: datetime) -> str:
+    """窗口边界展示格式：UTC 锚点切分的边界转本地时区（只含时间，无位置）。"""
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def run_trend_mode(headers: dict[str, str], argv: list[str]) -> int:
+    """趋势模式：最近 N 个连续 7 天滚动周窗口的训练量趋势。
+
+    100% 复用 fetch_weekly_trend（单次列表请求整个跨度后本地归窗），
+    脚本不重新实现任何窗口切分/聚合逻辑；打印总跨度、每周窗口边界
+    （本地时间起止）与完整周期聚合摘要；某周 0 条活动时明确打印
+    （真实数据下这本身就是有价值的验收信息）。
+    """
+    weeks = _parse_weeks(argv)
+    if weeks is None:
+        return 1
+
+    client = HTCClient(headers=headers)
+    try:
+        trend = fetch_weekly_trend(
+            client, weeks=weeks, limit=MAX_LIST_LIMIT_FOR_TREND
+        )
+    except ValueError as exc:
+        print(f"Invalid weeks: {exc}")
+        return 1
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {ACTIVITY_RECORD_QUERY_URL}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC API request: SUCCESS (single list request over the whole span, HTTP 2xx)")
+    print(f"weeks={weeks} window_days={trend.window_days}")
+    print(f"total span: ({_fmt_local(trend.weeks[0].window_start)} .. {_fmt_local(trend.anchor)})")
+
+    for i, week in enumerate(trend.weeks, start=1):
+        _print_period_summary(
+            f"week {i}/{weeks} ({_fmt_local(week.window_start)} .. {_fmt_local(week.window_end)})",
+            week.summary,
+        )
+        if week.summary.activity_count == 0:
+            print("  (no activities fell into this window)")
+    return 0
+
+
+def run_trend_delta_mode(headers: dict[str, str], argv: list[str]) -> int:
+    """环比模式：相邻周 older→newer 环比（transitions 按时间升序）。
+
+    100% 复用 fetch_weekly_trend_delta（单次请求 → 一次聚合 → 环比），
+    脚本不重新实现任何对比数学；每对打印两窗边界（本地时间起止）与
+    7 项总量指标 + HR avg/max 的 baseline→current (delta=..., pct=...)，
+    pct 为 None 时打印 N/A；weeks=1 时 transitions 为空，打印说明。
+    """
+    weeks = _parse_weeks(argv)
+    if weeks is None:
+        return 1
+
+    client = HTCClient(headers=headers)
+    try:
+        delta = fetch_weekly_trend_delta(
+            client, weeks=weeks, limit=MAX_LIST_LIMIT_FOR_TREND
+        )
+    except ValueError as exc:
+        print(f"Invalid weeks: {exc}")
+        return 1
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {ACTIVITY_RECORD_QUERY_URL}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC API request: SUCCESS (single list request over the whole span, HTTP 2xx)")
+    print(f"weeks={weeks} window_days={delta.window_days} "
+          f"transitions={len(delta.transitions)}")
+    if not delta.transitions:
+        print("weeks=1 -> only one week window, no adjacent pair to compare "
+              "(transitions is empty by contract).")
+        return 0
+
+    for i, t in enumerate(delta.transitions, start=1):
+        print(f"[transition {i}/{len(delta.transitions)}]")
+        print(f"  baseline (older): ({_fmt_local(t.baseline_window_start)} .. {_fmt_local(t.baseline_window_end)})")
+        print(f"  current  (newer): ({_fmt_local(t.current_window_start)} .. {_fmt_local(t.current_window_end)})")
+        for name in (
+            "activity_count", "total_distance", "total_duration_seconds",
+            "total_calories", "total_steps", "total_ascent", "total_descent",
+            "average_heart_rate", "max_heart_rate",
+        ):
+            m = getattr(t, name)
+            pct = f"{m.percentage_change:+.1f}%" if m.percentage_change is not None else "N/A"
+            print(f"  {name}: {m.baseline} -> {m.current} (delta={m.delta}, pct={pct})")
+    return 0
+
+
 def main() -> int:
     headers = build_headers()
     if headers is None:
@@ -394,6 +511,10 @@ def main() -> int:
         return run_period_mode(headers)
     if mode == "comparison":
         return run_comparison_mode(headers, argv)
+    if mode == "trend":
+        return run_trend_mode(headers, argv)
+    if mode == "trend-delta":
+        return run_trend_delta_mode(headers, argv)
     return run_list_mode(headers)
 
 

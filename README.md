@@ -54,9 +54,13 @@ python -m venv .venv
 $env:HTC_AUTHORIZATION = "<你的 Authorization 值>"
 $env:HTC_CLIENT_ID     = "<你的 x-client-id 值>"
 
-# 3. （可选）真实 API 连通性自检
-.\.venv\Scripts\python.exe scripts\test_real_htc.py          # 列表模式
-.\.venv\Scripts\python.exe scripts\test_real_htc.py detail   # 详情模式
+# 3. （可选）真实 API 连通性自检（六种模式，任选）
+.\.venv\Scripts\python.exe scripts\test_real_htc.py                    # list：最近训练列表
+.\.venv\Scripts\python.exe scripts\test_real_htc.py detail             # detail：单次训练采样详情
+.\.venv\Scripts\python.exe scripts\test_real_htc.py period             # period：周期聚合
+.\.venv\Scripts\python.exe scripts\test_real_htc.py comparison 7       # comparison：连续两窗口对比
+.\.venv\Scripts\python.exe scripts\test_real_htc.py trend 4            # trend：滚动周窗口趋势
+.\.venv\Scripts\python.exe scripts\test_real_htc.py trend-delta 4      # trend-delta：相邻周环比
 
 # 4. 启动 MCP 服务（stdio）
 .\.venv\Scripts\python.exe -m src.huawei_health_mcp.server
@@ -94,12 +98,15 @@ $env:HTC_CLIENT_ID     = "<你的 x-client-id 值>"
 
 ```
 src/huawei_health_mcp/
-├─ client.py     # HTCClient：HTTP 取数，返回原始 JSON（不解析）
-├─ parser.py     # 原始 JSON → 标准模型（时间戳契约：记录 ms / 采样 ns）
-├─ models.py     # Pydantic 模型（ActivityRecord / ActivityDetail / TrainingSummary 族）
-├─ analysis.py   # 确定性统计分析（ActivityDetail → TrainingSummary）
-└─ server.py     # FastMCP 服务与工具接线
-scripts/test_real_htc.py   # 人工真实请求脚本（需要环境变量凭证）
+├─ client.py             # HTCClient：HTTP 取数，返回原始 JSON（不解析）
+├─ parser.py             # 原始 JSON → 标准模型（时间戳契约：记录 ms / 采样 ns）
+├─ models.py             # Pydantic 模型（ActivityRecord / ActivityDetail / TrainingSummary 族）
+├─ analysis.py           # 确定性统计分析（ActivityDetail → TrainingSummary）
+├─ period_analysis.py    # 周期聚合（多 ActivityRecord → TrainingPeriodSummary）
+├─ period_comparison.py  # 周期对比（两个 TrainingPeriodSummary → TrainingPeriodComparison）
+├─ trend_analysis.py     # 滚动周趋势与相邻周环比（复用聚合层与对比层）
+└─ server.py             # FastMCP 服务与工具接线
+scripts/test_real_htc.py   # 人工真实请求脚本（list / detail / period / comparison / trend / trend-delta 六模式，需要环境变量凭证）
 tests/                     # 单元测试（synthetic fixture，无真实用户数据）
 PROJECT_STATE.md           # 项目长期状态账本（新贡献者/Agent 从这里恢复上下文）
 ```
