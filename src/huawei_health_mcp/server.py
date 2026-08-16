@@ -23,12 +23,14 @@ from fastmcp import FastMCP
 from .analysis import compute_session_metrics, summarize_activity_detail
 from .period_analysis import aggregate_activity_period
 from .period_comparison import compare_training_periods
+from .trend_analysis import aggregate_weekly_trend
 from .client import HTCClient, HTCClientError
 from .models import (
     ActivityDetail,
     ActivityRecord,
     TrainingPeriodComparison,
     TrainingSummary,
+    TrainingTrendSummary,
 )
 from .parser import parse_activity_detail, parse_activity_record
 
@@ -49,6 +51,10 @@ MAX_LIST_LIMIT = 100
 # 周期对比单个窗口的最大天数（Phase 6.9）：两个连续窗口的总跨度
 # （2 * window_days）不得超过 MAX_LOOKBACK_DAYS 上限
 MAX_COMPARISON_WINDOW_DAYS = MAX_LOOKBACK_DAYS // 2  # 365
+
+# 周趋势最大窗口数（Phase 6.10）：weeks * 7 天总跨度不得超过
+# MAX_LOOKBACK_DAYS 上限（104 * 7 = 728 <= 730）
+MAX_TREND_WEEKS = MAX_LOOKBACK_DAYS // 7  # 104
 
 # 查询活动详情时，在最近训练列表里定位目标活动最多扫描多少条记录
 DETAIL_LOOKUP_LIMIT = 50
@@ -126,6 +132,18 @@ def _validate_window_days(window_days: int) -> int:
             f"当前为 {window_days}"
         )
     return window_days
+
+def _validate_weeks(weeks: int) -> int:
+    """校验周趋势窗口数（Phase 6.10）。
+
+    1 ~ MAX_TREND_WEEKS（104）：weeks * 7 天总跨度不得超过
+    MAX_LOOKBACK_DAYS（730）上限。
+    """
+    if not 1 <= weeks <= MAX_TREND_WEEKS:
+        raise ValueError(
+            f"weeks 必须在 1~{MAX_TREND_WEEKS} 之间，当前为 {weeks}"
+        )
+    return weeks
 
 def _default_time_range(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> tuple[str, str]:
     """返回 (start_time, end_time) 毫秒级字符串时间戳。
@@ -312,6 +330,33 @@ def fetch_activity_detail(
         client, activity_id, lookback_days=lookback_days,
         detail_data_types=detail_data_types,
     )[1]
+
+def fetch_weekly_trend(
+    client: HTCClient,
+    weeks: int = 4,
+    limit: int = 100,
+) -> TrainingTrendSummary:
+    """取最近 N 个连续 7 天周窗口的趋势：单次列表请求整个跨度后本地归窗。
+
+    - 一次请求 [now - weeks*7d, now)，同一 now 同时用于请求时间范围
+      与窗口切分（零边界漂移）；归窗过滤保证窗口语义即使服务端
+      对范围行为宽松也不受影响
+    - 每窗口复用 aggregate_activity_period（完整周期聚合契约继承）
+    - start_time 缺失或落在跨度之外的记录被排除
+    """
+    _validate_weeks(weeks)
+    _validate_limit(limit)
+
+    now = datetime.now(timezone.utc)
+    span_start = now - timedelta(days=weeks * 7)
+    raw = client.query_activity_records(
+        start_time=_to_ms(span_start), end_time=_to_ms(now), limit=limit
+    )
+    records = [
+        parse_activity_record(item) for item in _extract_activity_list(raw)
+    ]
+    return aggregate_weekly_trend(records, weeks=weeks, now=now)
+
 
 @mcp.tool()
 def health_check() -> dict:
@@ -577,6 +622,49 @@ def get_training_period_comparison(window_days: int = 7, limit: int = 100) -> di
         "end": now.isoformat(),
     }
     return result
+
+
+@mcp.tool()
+def get_training_weekly_trend(weeks: int = 4, limit: int = 100) -> dict:
+    """获取最近 N 个连续周窗口的训练量趋势（纯聚合，无业务标准）。
+
+    把最近 weeks x 7 天切成 N 个连续、不重叠的滚动周窗口
+    （[now-2w, now-w) ... [now-7d, now)，半开区间，同一时间锚点），
+    每个窗口输出完整周期聚合：活动次数 / 总距离 / 总历时（含间歇）/
+    总卡路里 / 步数 / 累计爬升下降 / 平均与最大心率（设备 summary
+    来源，hr_activity_count 标记有效数）/ 按 activityType 原样分组。
+
+    参数：
+        weeks: 周窗口数（默认 4，范围 1~104；总跨度不超 730 天上限）。
+        limit: 整个跨度最多查询多少条训练（默认 100，范围 1~100）。
+            跨度内活动超过 limit 时较早的记录会被截断（与列表接口
+            契约一致）。
+
+    返回：
+        anchor（统一时间锚点）/ window_days=7 / weeks 数组（时间升序，
+        weeks[0] 最旧），每周含 window_start / window_end 与完整
+        TrainingPeriodSummary。
+
+    语义说明：
+        - 周窗口为滚动 7 天连续区间（非自然周）：不引入时区 /
+          周起始日语义；相邻窗口共享边界值但不重叠
+        - 活动按自身开始时间归属唯一窗口；恰在边界上的活动归较新窗口
+        - duration 为每条记录起止时间差的总历时（含间歇）
+        - 缺失字段 None（不伪造 0），各 *_activity_count 标记有效数
+        - 不提供周期配速；不解释 activityType 数值的运动名称
+
+    错误：
+        非法 weeks / limit 抛 ValueError；认证/HTTP 错误以
+        HTCClientError 族异常清晰报告。
+    """
+    _validate_weeks(weeks)
+    _validate_limit(limit)
+    client = create_htc_client()
+    try:
+        trend = fetch_weekly_trend(client, weeks=weeks, limit=limit)
+    finally:
+        client.close()
+    return trend.model_dump(mode="json")
 
 
 if __name__ == "__main__":

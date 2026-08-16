@@ -290,3 +290,33 @@ class TrainingPeriodComparison(BaseModel):
     total_duration_seconds: MetricComparison = Field(default_factory=MetricComparison)
     average_heart_rate: MetricComparison = Field(default_factory=MetricComparison)
     max_heart_rate: MetricComparison = Field(default_factory=MetricComparison)
+
+
+class TrainingWeekSummary(BaseModel):
+    """单个连续 7 天周窗口的聚合（Phase 6.10）。
+
+    - 窗口为滚动 7 天连续区间 [window_start, window_end)，半开区间；
+      非自然周（不引入时区 / 周起始日语义，避免擅自决定业务标准）
+    - 所有窗口由同一 now 锚点切分：相邻窗口共享边界值但不重叠
+    - summary 为该窗口内 ActivityRecord 的完整 TrainingPeriodSummary，
+      Phase 6.7/6.8 全字段契约继承（total_* / *_activity_count /
+      activity_types 分组 / HR 设备 summary 来源 + hr_activity_count）
+    """
+
+    window_start: datetime
+    window_end: datetime
+    summary: TrainingPeriodSummary
+
+
+class TrainingTrendSummary(BaseModel):
+    """最近 N 个连续周窗口的训练趋势（Phase 6.10，纯聚合，无业务标准）。
+
+    - weeks 按时间升序：weeks[0] 最旧，weeks[-1] 最近 [now-7d, now)
+    - 所有窗口由同一 anchor 切分；活动按自身 start_time 归属唯一窗口，
+      start_time 缺失或落在全部窗口之外的记录被排除
+    - 不含周期配速、不解释 activityType 语义（契约见 PROJECT_STATE）
+    """
+
+    anchor: datetime
+    window_days: int = 7
+    weeks: list[TrainingWeekSummary] = Field(default_factory=list)

@@ -18,8 +18,12 @@ Huawei Training Camp / Huawei Health 网页端的运动训练数据。
 | `get_session_metrics(activity_id, lookback_days=30)` | 单次训练核心指标（时长 / 心率 / 速度 / 配速 / 距离，带 device_summary/samples 来源标记） |
 | `get_training_period_summary(lookback_days=7, limit=100)` | 一段周期内多次训练聚合（次数 / 总距离 / 总历时 / 平均与最大单次 / 心率 / 卡路里 / 累计爬升下降 / 步数 / 按 activityType 分组），类型值原样保留不命名语义 |
 | `get_training_period_comparison(window_days=7, limit=100)` | 两个连续周期对比：最近 N 天 vs 之前 N 天（每指标 baseline / current / delta / percentage_change；缺失≠0，baseline 为 0 或缺失时 pct 为 None 不除零） |
+| `get_training_weekly_trend(weeks=4, limit=100)` | 最近 N 个连续周窗口的训练量趋势（滚动 7 天窗口、同一时间锚点、不重叠；每周完整周期聚合：次数/距离/历时/卡路里/步数/爬降/心率/类型分组） |
 
 - `lookback_days`：查询窗口天数，默认 30，范围 1~730；查更早的训练时调大。
+- `weeks`（周趋势）：周窗口数，默认 4，范围 1~104（总跨度 ≤728 天 ≤730 上限）；
+  滚动 7 天连续窗口（非自然周，不引入时区/周起始日语义），单次列表请求整个
+  跨度后本地归窗；恰在窗口边界的活动归较新窗口。
 - `window_days`（周期对比）：单窗口天数，默认 7，范围 1~365；当前窗口
   `[now-N, now)`、基线窗口 `[now-2N, now-N)`，相邻不重叠；返回记录还会按
   自身开始时间做窗口过滤，保证窗口语义（历史区间的服务端行为尚未真实验证）。
