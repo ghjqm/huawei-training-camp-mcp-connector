@@ -148,3 +148,20 @@ def test_lookback_days_validation():
         with pytest.raises(ValueError) as exc_info:
             get_recent_activities(lookback_days=bad)
         assert "lookback_days" in str(exc_info.value)
+
+# ---------------- limit 边界校验（Phase 6.5） ----------------
+
+def test_limit_validation():
+    """非法 limit（0 / 负数 / 超过 100）抛 ValueError，不发请求。"""
+    import pytest
+
+    for bad in (0, -1, 101, 100000):
+        with pytest.raises(ValueError) as exc_info:
+            get_recent_activities(limit=bad)
+        assert "limit" in str(exc_info.value)
+
+
+def test_limit_upper_bound_accepted():
+    """合法边界值 limit=100 正常执行（不发请求错误）。"""
+    payload = _capture_list_payload(lambda: get_recent_activities(limit=100))
+    assert payload["limit"] == 100

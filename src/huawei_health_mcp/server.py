@@ -35,6 +35,10 @@ DEFAULT_LOOKBACK_DAYS = 30
 # lookback_days 允许的最大值（约两年）：防止过大窗口拖慢查询或触发服务端限制
 MAX_LOOKBACK_DAYS = 730
 
+# limit 允许的最大值：单次列表查询的防御性上限（MCP 入口校验；
+# 内部 DETAIL_LOOKUP_LIMIT 定位调用不受影响）
+MAX_LIST_LIMIT = 100
+
 # 查询活动详情时，在最近训练列表里定位目标活动最多扫描多少条记录
 DETAIL_LOOKUP_LIMIT = 50
 
@@ -86,6 +90,18 @@ def _validate_lookback_days(lookback_days: int) -> int:
             f"lookback_days 必须在 1~{MAX_LOOKBACK_DAYS} 之间，当前为 {lookback_days}"
         )
     return lookback_days
+
+def _validate_limit(limit: int) -> int:
+    """校验列表查询条数（Phase 6.5）。
+
+    允许 1 ~ MAX_LIST_LIMIT：0 / 负数无意义，过大可能拖慢查询或触发
+    服务端限制。非法值抛 ValueError，调用方直接看到可理解的错误。
+    """
+    if not 1 <= limit <= MAX_LIST_LIMIT:
+        raise ValueError(
+            f"limit 必须在 1~{MAX_LIST_LIMIT} 之间，当前为 {limit}"
+        )
+    return limit
 
 def _default_time_range(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> tuple[str, str]:
     """返回 (start_time, end_time) 毫秒级字符串时间戳。
@@ -230,6 +246,7 @@ def get_recent_activities(
         认证所需的 Cookie 从环境变量 HTC_COOKIE 读取；
         本项目不实现登录，也不猜测或绕过任何认证机制。
     """
+    _validate_limit(limit)
     client = create_htc_client()
     try:
         records = fetch_recent_activities(
