@@ -1,0 +1,54 @@
+{
+  "activityId": "2338979373-1786706479000",
+  "activityType": 56,
+  "startTime": 1786706479000,
+  "endTime": 1786707100000,
+  "activeTime": 623,
+  "performanceSummary": {
+    "aerobicTrainingStress": 84.5,
+    "recoveryTime": 36,
+    "vo2Max": 47.3,
+    "loadPeak": 92.0
+  },
+  "dataSummary": {
+    "com.huawei.continuous.heart_rate.statistics": {
+      "dataTypeName": "com.huawei.continuous.heart_rate.statistics",
+      "value": [
+        { "fieldName": "averageHeartRate", "floatValue": 142.0 },
+        { "fieldName": "maxHeartRate", "floatValue": 168.0 },
+        { "fieldName": "minHeartRate", "floatValue": 98.0 }
+      ]
+    },
+    "com.huawei.continuous.distance.total": {
+      "dataTypeName": "com.huawei.continuous.distance.total",
+      "value": [
+        { "fieldName": "distance", "floatValue": 5120.0 }
+      ]
+    },
+    "com.huawei.continuous.speed.statistics": {
+      "dataTypeName": "com.huawei.continuous.speed.statistics",
+      "value": [
+        { "fieldName": "averageSpeed", "floatValue": 2.85 },
+        { "fieldName": "maxSpeed", "floatValue": 3.62 }
+      ]
+    }
+  },
+  "detailData": [
+    {
+      "dataCollectorId": "raw:com.huawei.instantaneous.exercise_heart_rate:com.huawei.health:HUAWEI:HUAWEI WATCH GT 5:2338979373:2338979373",
+      "samplePoints": [
+        { "startTime": 1786706479000000000, "endTime": 1786706479000000000, "dataTypeName": "com.huawei.instantaneous.exercise_heart_rate", "value": [ { "fieldName": "bpm", "floatValue": 93.0 } ] },
+        { "startTime": 1786706484000000000, "endTime": 1786706484000000000, "dataTypeName": "com.huawei.instantaneous.exercise_heart_rate", "value": [ { "fieldName": "bpm", "floatValue": 121.0 } ] },
+        { "startTime": 1786706490000000000, "endTime": 1786706490000000000, "dataTypeName": "com.huawei.instantaneous.exercise_heart_rate", "value": [ { "fieldName": "bpm", "floatValue": 133.0 } ] }
+      ]
+    },
+    {
+      "dataCollectorId": "raw:com.huawei.instantaneous.steps.rate:com.huawei.health:HUAWEI:HUAWEI WATCH GT 5:2338979373:2338979373",
+      "samplePoints": [
+        { "startTime": 1786706479000000000, "endTime": 1786706479000000000, "dataTypeName": "com.huawei.instantaneous.steps.rate", "value": [ { "fieldName": "step_rate", "floatValue": 156.0 } ] },
+        { "startTime": 1786706484000000000, "endTime": 1786706484000000000, "dataTypeName": "com.huawei.instantaneous.steps.rate", "value": [ { "fieldName": "step_rate", "floatValue": 168.0 } ] },
+        { "startTime": 1786706490000000000, "endTime": 1786706490000000000, "dataTypeName": "com.huawei.instantaneous.steps.rate", "value": [ { "fieldName": "step_rate", "floatValue": 172.0 } ] }
+      ]
+    }
+  ]
+}

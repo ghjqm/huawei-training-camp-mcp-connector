@@ -1,0 +1,289 @@
+"""真实 HTC API 验证脚本（人工运行，不属于 pytest 测试套件）。
+
+pytest 中的全部测试（tests/）仍然使用 MockTransport，不访问真实网络。
+
+运行方式（项目根目录，需先激活虚拟环境）：
+    python scripts/test_real_htc.py           # 列表模式：最近 7 天训练列表 + parser 验证
+    python scripts/test_real_htc.py detail    # 详情模式：单次训练高频 detail schema 勘探
+
+前置条件（环境变量 -> HTTP 请求头，映射来自用户确认的浏览器成功请求）：
+    HTC_AUTHORIZATION -> Authorization: Bearer <敏感值>
+    HTC_CLIENT_ID     -> x-client-id: <敏感值>
+    HTC_VERSION       -> x-version: HealthKitRunningGroupPortal_6.26.4.200
+    HTC_COOKIE        -> Cookie: <敏感值>
+
+安全原则：
+    - 所有值只从本地环境变量读取；未设置的变量不猜测默认值
+    - 不登录、不自动获取/刷新 Cookie、不读浏览器数据库
+    - 不把任何凭证写入源码 / 文件 / Git
+    - 不在终端打印 Authorization / Cookie / Token / 完整 Header / 完整 JSON
+
+详情模式（第六阶段 6.1 schema 勘探）做的事：
+    1. 读取列表模式已保存的真实记录 data_temp/real_activity_records.json
+       （因此需先成功运行一次列表模式）
+    2. 选择一条训练（优先 activityType=56 跑步），逐字回传该记录自身的
+       startTime/endTime（毫秒，来自 API 本身，不做单位换算猜测）
+    3. 调用现有 query_activity_detail()，只请求 8 个核心 dataType
+    4. 保存原始响应到 data_temp/real_activity_detail.json（git-ignored）
+    5. 输出安全结构摘要（key 名与计数，不含完整数据）
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+# 让 `python scripts/test_real_htc.py` 也能 import src.huawei_health_mcp
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# 复用现有实现，不重复逻辑：
+# - client.py：HTTP 层（HTCClient、异常、URL 常量）
+# - parser.py：解析层（parse_activity_record）
+# - server.py：时间范围与列表抽取辅助（与 get_recent_activities 同一逻辑）
+from src.huawei_health_mcp.client import (  # noqa: E402
+    ACTIVITY_RECORD_QUERY_URL,
+    HTCClient,
+    HTCClientError,
+)
+from src.huawei_health_mcp.parser import parse_activity_record  # noqa: E402
+from src.huawei_health_mcp.server import (  # noqa: E402
+    _default_time_range,
+    _extract_activity_list,
+)
+
+# 列表模式：只查最近 7 天、最多 5 条，不请求过大历史范围
+LOOKBACK_DAYS = 7
+LIMIT = 5
+
+# 真实响应保存位置（.gitignore 已忽略 data_temp/，不会进入 Git）
+OUTPUT_FILE = PROJECT_ROOT / "data_temp" / "real_activity_records.json"
+DETAIL_OUTPUT_FILE = PROJECT_ROOT / "data_temp" / "real_activity_detail.json"
+RECORDS_INPUT_FILE = OUTPUT_FILE  # 详情模式从列表模式保存的文件里选训练
+
+# 环境变量 -> HTTP 请求头 映射（键名来自用户确认的浏览器成功请求）
+ENV_TO_HEADER = {
+    "HTC_AUTHORIZATION": "Authorization",
+    "HTC_CLIENT_ID": "x-client-id",
+    "HTC_VERSION": "x-version",
+    "HTC_COOKIE": "Cookie",
+}
+
+# 已确认的认证链路关键变量（Authorization 已被确认为关键请求头）：
+# 缺失任何一个都清晰报错退出，绝不猜测默认值
+REQUIRED_ENV = ("HTC_AUTHORIZATION", "HTC_CLIENT_ID")
+
+# 缺失不阻塞运行，但对应 Header 会被省略（打印警告）
+OPTIONAL_ENV = ("HTC_VERSION", "HTC_COOKIE")
+
+# 详情模式第一轮只请求 8 个核心 dataType（来自用户确认的浏览器请求）
+DETAIL_DATA_TYPES = [
+    "com.huawei.instantaneous.exercise_heart_rate",
+    "com.huawei.recovery_heart_rate",
+    "com.huawei.instantaneous.speed",
+    "com.huawei.instantaneous.steps.rate",
+    "com.huawei.continuous.run.posture",
+    "com.huawei.instantaneous.altitude",
+    "com.huawei.instantaneous.location.sample",
+    "com.huawei.analog_power",
+]
+
+
+def build_headers() -> dict[str, str] | None:
+    """从环境变量构造请求 headers。
+
+    - 缺少必要变量时打印缺失的变量名（只打印名字，绝不打印值）并返回 None
+    - 可选变量缺失时打印警告，对应 Header 省略
+    - 不设置任何默认值，不猜测任何认证机制
+    """
+    missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
+    if missing:
+        print("Missing required environment variable(s): " + ", ".join(missing))
+        print("Set them to values captured from your own logged-in browser session, e.g.:")
+        for name in missing:
+            print(f'  PowerShell:  $env:{name} = "<value>"')
+        return None
+
+    headers: dict[str, str] = {}
+    for env_name, header_name in ENV_TO_HEADER.items():
+        value = os.environ.get(env_name)
+        if value:
+            headers[header_name] = value
+        elif env_name in OPTIONAL_ENV:
+            print(f"WARNING: {env_name} not set -> header '{header_name}' will be omitted.")
+    return headers
+
+
+def _walk_sample_containers(node: Any, found: list[dict]) -> None:
+    """递归收集所有带 samplePoints 的容器（只用于输出安全摘要）。"""
+    if isinstance(node, dict):
+        if isinstance(node.get("samplePoints"), list):
+            found.append(node)
+        for v in node.values():
+            _walk_sample_containers(v, found)
+    elif isinstance(node, list):
+        for item in node:
+            _walk_sample_containers(item, found)
+
+
+def run_detail_mode(headers: dict[str, str]) -> int:
+    """第六阶段 6.1：真实 Activity Detail schema 勘探。"""
+    if not RECORDS_INPUT_FILE.exists():
+        print(f"Saved real records not found: {RECORDS_INPUT_FILE}")
+        print("Run the list mode first:  python scripts/test_real_htc.py")
+        return 1
+
+    with open(RECORDS_INPUT_FILE, "r", encoding="utf-8") as f:
+        records = json.load(f)
+    if not isinstance(records, list) or not records:
+        print("Saved real records file is empty or not a list; re-run list mode first.")
+        return 1
+
+    # 优先选跑步（activityType=56，真实数据已确认为 int）
+    rec = next((r for r in records if r.get("activityType") == 56), records[0])
+    # 逐字回传记录自身的时间戳（毫秒，来自 API 本身，不做单位换算）
+    start_time, end_time = str(rec["startTime"]), str(rec["endTime"])
+    activity_type = str(rec["activityType"])
+    print("Selected activity:")
+    print(f"  id={rec.get('id')} activityType={activity_type}")
+    print(f"  startTime={start_time} endTime={end_time} (verbatim from record)")
+
+    client = HTCClient(headers=headers)
+    try:
+        raw = client.query_activity_detail(
+            start_time=start_time,
+            end_time=end_time,
+            activity_type=activity_type,
+            detail_data_types=DETAIL_DATA_TYPES,
+            high_freq_details_preferred=True,
+        )
+    except HTCClientError as exc:
+        print("HTC detail request: FAILED")
+        print(f"URL: {ACTIVITY_RECORD_QUERY_URL}")
+        print(f"Error: {exc}")
+        print()
+        print("If this fails, retry with fewer detailDataType entries and record")
+        print("which dataType caused the failure. This project will not guess schema.")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC detail request: SUCCESS")
+    print("HTTP status: 2xx")
+
+    # 先保存原始 JSON：即使后续分析出错，真实响应也已留档
+    DETAIL_OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(DETAIL_OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+    print(f"Raw JSON saved to: {DETAIL_OUTPUT_FILE} (git-ignored)")
+
+    # 安全结构摘要：只输出类型 / key 名 / 计数
+    print(f"Top-level type: {type(raw).__name__}")
+    if isinstance(raw, dict):
+        print(f"Top-level keys: {sorted(raw.keys())}")
+        for k, v in raw.items():
+            print(f"  {k}: {type(v).__name__}" + (f" (len={len(v)})" if isinstance(v, (list, dict)) else ""))
+
+    containers: list[dict] = []
+    _walk_sample_containers(raw, containers)
+    print(f"samplePoints containers found: {len(containers)}")
+    for c in containers:
+        sp = c.get("samplePoints") or []
+        print(f"  - dataTypeName={c.get('dataTypeName')} samples={len(sp)}")
+
+    return 0
+
+
+def run_list_mode(headers: dict[str, str]) -> int:
+    """第五阶段逻辑：最近训练列表 + 现有 parser 验证（保持不变）。"""
+    # 时间范围：最近 7 天 -> 现在（毫秒级字符串，与 server.py 同一实现）
+    start_time, end_time = _default_time_range(LOOKBACK_DAYS)
+
+    client = HTCClient(headers=headers)
+    try:
+        raw = client.query_activity_records(
+            start_time=start_time, end_time=end_time, limit=LIMIT
+        )
+    except HTCClientError as exc:
+        # 失败输出只含状态码 / URL / 简短错误，不含任何认证信息
+        print("HTC API request: FAILED")
+        print(f"URL: {ACTIVITY_RECORD_QUERY_URL}")
+        print(f"Error: {exc}")
+        print()
+        print("If this is an auth failure (401/403), the required headers must be")
+        print("confirmed from a successful browser request before retrying.")
+        print("This project will not guess or bypass any authentication.")
+        return 1
+    finally:
+        client.close()
+
+    # 走到这里说明 HTTP 2xx 且响应是合法 JSON
+    print("HTC API request: SUCCESS")
+    print("HTTP status: 2xx")
+
+    # 先保存原始 JSON：即使后续抽取/解析出错，真实响应也已留档便于排查
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+    print(f"Raw JSON saved to: {OUTPUT_FILE} (git-ignored)")
+
+    records = _extract_activity_list(raw)
+    print(f"Records returned: {len(records)}")
+
+    # 只输出 key 名（不输出值），用于安全诊断真实结构
+    if records and isinstance(records[0], dict):
+        print(f"First record top-level keys: {sorted(records[0].keys())}")
+
+    if not records:
+        print("Parser: SKIPPED (no records in response)")
+        if isinstance(raw, dict):
+            print(f"Response top-level keys: {sorted(raw.keys())}")
+        else:
+            print(f"Response top-level type: {type(raw).__name__}")
+        return 0
+
+    # 用现有 parser 逐条解析真实数据，只输出安全摘要
+    parsed_ok = 0
+    for item in records:
+        try:
+            rec = parse_activity_record(item)
+            parsed_ok += 1
+            key_fields = [
+                rec.activity_id,
+                rec.start_time,
+                rec.end_time,
+                rec.distance,
+                rec.avg_heart_rate,
+                rec.vo2_max,
+            ]
+            present = sum(1 for v in key_fields if v is not None)
+            samples = len(rec.heart_rate_samples)
+            print(
+                f"  - activity_id={rec.activity_id} "
+                f"(key fields present: {present}/6, hr_samples: {samples})"
+            )
+        except Exception as exc:  # noqa: BLE001 - 验证脚本需要报告任何解析失败
+            print(f"  - parse FAILED: {type(exc).__name__}: {exc}")
+
+    print(f"Parser: {'SUCCESS' if parsed_ok == len(records) else 'PARTIAL FAILURE'} "
+          f"({parsed_ok}/{len(records)})")
+    return 0 if parsed_ok == len(records) else 1
+
+
+def main() -> int:
+    headers = build_headers()
+    if headers is None:
+        return 1
+
+    mode = sys.argv[1] if len(sys.argv) > 1 else "list"
+    if mode == "detail":
+        return run_detail_mode(headers)
+    return run_list_mode(headers)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

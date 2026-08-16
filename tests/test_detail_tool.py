@@ -1,0 +1,233 @@
+"""get_activity_detail MCP 工具的单元测试（Phase 6.2-D）。
+
+全部使用 httpx.MockTransport 模拟 HTC API：一次 handler 按请求 payload
+特征区分列表查询（含 limit/order）与详情查询（含 detailDataType），
+不访问真实网络、不需要 Cookie。
+
+detail 响应体复用 synthetic fixture（tests/fixtures/sample_activity_detail.json，
+顶层 list、3 个 collector：心率 / location / 空 power），不含真实用户数据。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import httpx
+import pytest
+
+from src.huawei_health_mcp.client import HTCClient, HTCHTTPError
+from src.huawei_health_mcp.server import get_activity_detail
+
+FIXTURE = Path(__file__).parent / "fixtures" / "sample_activity_detail.json"
+
+# 与 synthetic fixture 中 detail 对象一致的记录级值（毫秒 / int）
+TARGET_ID = "synthetic-detail-0001"
+RECORD_START_MS = 1786706473000
+RECORD_END_MS = 1786709186000
+
+RECORDS_BODY = [
+    # 一条干扰记录在前，验证按 id 正确定位而非取第一条
+    {"id": "other-activity-1", "activityType": 90,
+     "startTime": 1786620000000, "endTime": 1786623600000},
+    {"id": TARGET_ID, "activityType": 56,
+     "startTime": RECORD_START_MS, "endTime": RECORD_END_MS},
+]
+
+
+def _make_mock_client(handler) -> HTCClient:
+    """用 MockTransport 构造一个不联网的 HTCClient。"""
+    transport = httpx.MockTransport(handler)
+    return HTCClient(headers={}, client=httpx.Client(transport=transport))
+
+
+def _two_phase_handler(captured: dict[str, Any], detail_body: Any) -> Any:
+    """构造同时服务列表查询与详情查询的 handler。
+
+    列表请求 payload 含 limit/order；详情请求 payload 含 activityType +
+    detailDataType。详情响应默认用 synthetic fixture。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode())
+        if "detailDataType" in payload:
+            captured["detail"] = payload
+            return httpx.Response(200, json=detail_body)
+        captured["list"] = payload
+        return httpx.Response(200, json=RECORDS_BODY)
+
+    return handler
+
+
+# ---------------- 1/2/3/4/5/10/11：正常路径全链路 ----------------
+
+def test_success_full_chain_returns_parsed_detail():
+    """正常链路：列表定位 → 详情请求 → parser → 序列化 dict。
+
+    覆盖：正确传入并解析 activity id、client/parser 被正确调用、
+    多 collector 与 samplePoints/value[] 保留、模型序列化风格。
+    """
+    captured: dict[str, Any] = {}
+    detail_body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    mock_client = _make_mock_client(_two_phase_handler(captured, detail_body))
+
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        result = get_activity_detail(activity_id=TARGET_ID)
+
+    # client 被调用两次（列表 + 详情），且列表请求带定位用 limit
+    assert "list" in captured and "detail" in captured
+    assert captured["list"]["limit"] == 50
+
+    # 顶层字段来自 detail 对象（synthetic fixture）
+    assert isinstance(result, dict)
+    assert result["activity_id"] == TARGET_ID
+    assert result["activity_type"] == 56
+    assert result["active_time"] == 2713
+    assert result["time_zone"] == "Asia/Shanghai"
+    # 顶层毫秒契约（6.2-C 真实数据修正）
+    assert result["start_time"].startswith("2026-08-14T11:21:13")
+
+    # details[]：3 个 collector（心率 / location / 空 power）
+    assert len(result["details"]) == 3
+
+    hr = result["details"][0]
+    assert "exercise_heart_rate" in hr["data_collector_id"]
+    assert hr["sample_points"][0]["data_type_name"] == (
+        "com.huawei.instantaneous.exercise_heart_rate"
+    )
+    assert hr["sample_points"][0]["values"] == {"bpm": 100.0}
+
+    loc = result["details"][1]
+    loc_values = loc["sample_points"][0]["values"]
+    assert set(loc_values) == {
+        "latitude", "longitude", "precision", "altitude", "coordinate"
+    }
+    assert isinstance(loc_values["coordinate"], int)  # integerValue 保真
+
+    assert result["details"][2]["sample_points"] == []
+
+
+def test_detail_payload_uses_record_values_verbatim():
+    """详情 payload 逐字使用定位到的记录的毫秒时间戳与类型，不换算。"""
+    captured: dict[str, Any] = {}
+    detail_body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    mock_client = _make_mock_client(_two_phase_handler(captured, detail_body))
+
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        get_activity_detail(activity_id=TARGET_ID)
+
+    detail_payload = captured["detail"]
+    assert detail_payload["startTime"] == str(RECORD_START_MS)
+    assert detail_payload["endTime"] == str(RECORD_END_MS)
+    assert detail_payload["activityType"] == "56"
+    assert detail_payload["highFreqDetailsPreferred"] is True
+    # 默认请求 8 个核心数据类型（Phase 6.1 确认集合）
+    assert len(detail_payload["detailDataType"]) == 8
+    assert detail_payload["detailDataType"][0] == (
+        "com.huawei.instantaneous.exercise_heart_rate"
+    )
+
+
+# ---------------- 6：空 detail 响应 ----------------
+
+def test_empty_detail_response_legal():
+    """详情响应为空列表时合法返回（details=[]），不抛错。"""
+    captured: dict[str, Any] = {}
+    mock_client = _make_mock_client(_two_phase_handler(captured, []))
+
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        result = get_activity_detail(activity_id=TARGET_ID)
+
+    assert isinstance(result, dict)
+    assert result["details"] == []
+
+
+# ---------------- 7：API HTTP 错误 ----------------
+
+def test_http_error_propagates():
+    """HTC HTTP 错误（500）向上清晰传播，不变成不可读 traceback。"""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode())
+        if "detailDataType" in payload:
+            return httpx.Response(500, text="server error")
+        return httpx.Response(200, json=RECORDS_BODY)
+
+    mock_client = _make_mock_client(handler)
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        with pytest.raises(HTCHTTPError) as exc_info:
+            get_activity_detail(activity_id=TARGET_ID)
+
+    assert "500" in str(exc_info.value)
+
+
+# ---------------- 8：认证失效 ----------------
+
+def test_auth_failure_propagates():
+    """认证失效（401）在列表查询阶段即清晰报错。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    mock_client = _make_mock_client(handler)
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        with pytest.raises(HTCHTTPError) as exc_info:
+            get_activity_detail(activity_id=TARGET_ID)
+
+    assert "401" in str(exc_info.value)
+
+
+# ---------------- malformed detail 响应 ----------------
+
+def test_malformed_detail_response_no_traceback():
+    """详情响应结构异常（非对象元素）时不崩溃：parser 容错返回空 detail。"""
+    captured: dict[str, Any] = {}
+    mock_client = _make_mock_client(_two_phase_handler(captured, [42]))
+
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        result = get_activity_detail(activity_id=TARGET_ID)
+
+    assert result["details"] == []
+    assert result["activity_id"] is None  # parser 对畸形输入的既定行为
+
+
+# ---------------- activity 不存在 ----------------
+
+def test_activity_not_found_raises_value_error():
+    """列表里找不到该 activity_id 时给出可操作的 ValueError。"""
+    captured: dict[str, Any] = {}
+    detail_body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode())
+        if "detailDataType" in payload:
+            captured["detail"] = payload
+            return httpx.Response(200, json=detail_body)
+        captured["list"] = payload
+        # 列表里只有别的活动
+        return httpx.Response(200, json=[RECORDS_BODY[0]])
+
+    mock_client = _make_mock_client(handler)
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        with pytest.raises(ValueError) as exc_info:
+            get_activity_detail(activity_id=TARGET_ID)
+
+    # 错误信息含 id 与可操作提示；且没有发起详情请求
+    assert TARGET_ID in str(exc_info.value)
+    assert "detail" not in captured

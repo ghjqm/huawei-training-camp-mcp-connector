@@ -1,0 +1,30 @@
+# Python 缓存 / 编译产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 本地数据库（第一阶段用 SQLite，注意不要提交隐私数据）
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# 本地导出的测试数据（包含个人隐私运动数据，绝不提交）
+data/*.json
+
+# 编辑器 / 操作系统文件
+.idea/
+.vscode/
+.DS_Store
+
+# 环境变量 / 密钥（绝不提交）
+.env
+*.secret
+
+# Stage 5 real-API temp data (personal workout data, never commit)
+data_temp/

@@ -1,0 +1,12 @@
+# Huawei Training Camp MCP —— 依赖清单
+# 安装方式：pip install -r requirements.txt （建议先创建虚拟环境，见 README / 对话说明）
+#
+# 说明：
+# - fastmcp 提供 MCP 服务与工具装饰器（@mcp.tool）
+# - pydantic 用于后续步骤的数据模型校验
+# - httpx 用于后续步骤连接 Huawei 服务（第一阶段未使用）
+# - SQLite 使用 Python 内置的 sqlite3，无需额外依赖
+
+fastmcp>=3.4.7
+pydantic>=2.0.0
+httpx>=0.27.0

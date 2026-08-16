@@ -1,0 +1,56 @@
+[
+  {
+    "id": "synthetic-detail-0001",
+    "activityType": 56,
+    "startTime": 1786706473000,
+    "endTime": 1786709186000,
+    "activeTime": 2713,
+    "timeZone": "Asia/Shanghai",
+    "details": [
+      {
+        "startTime": 1786706479000000000,
+        "endTime": 1786709180000000000,
+        "dataCollectorId": "raw:com.huawei.instantaneous.exercise_heart_rate:com.huawei.health:HUAWEI:SYNTHETIC WATCH:1",
+        "samplePoints": [
+          {
+            "startTime": 1786706479000000000,
+            "endTime": 1786706479000000000,
+            "dataTypeName": "com.huawei.instantaneous.exercise_heart_rate",
+            "value": [ { "fieldName": "bpm", "floatValue": 100.0 } ]
+          },
+          {
+            "startTime": 1786706484000000000,
+            "endTime": 1786706484000000000,
+            "dataTypeName": "com.huawei.instantaneous.exercise_heart_rate",
+            "value": [ { "fieldName": "bpm", "floatValue": 110.0 } ]
+          }
+        ]
+      },
+      {
+        "startTime": 1786706479500000000,
+        "endTime": 1786709180000000000,
+        "dataCollectorId": "raw:com.huawei.instantaneous.location.sample:com.huawei.health:HUAWEI:SYNTHETIC WATCH:1",
+        "samplePoints": [
+          {
+            "startTime": 1786706479500000000,
+            "endTime": 1786706479500000000,
+            "dataTypeName": "com.huawei.instantaneous.location.sample",
+            "value": [
+              { "fieldName": "latitude", "floatValue": 30.0 },
+              { "fieldName": "longitude", "floatValue": 120.0 },
+              { "fieldName": "precision", "floatValue": 5.0 },
+              { "fieldName": "altitude", "floatValue": 10.0 },
+              { "fieldName": "coordinate", "integerValue": 1 }
+            ]
+          }
+        ]
+      },
+      {
+        "startTime": 1786706480000000000,
+        "endTime": 1786706490000000000,
+        "dataCollectorId": "raw:com.huawei.analog_power:com.huawei.health:HUAWEI:SYNTHETIC WATCH:1",
+        "samplePoints": []
+      }
+    ]
+  }
+]
