@@ -36,6 +36,10 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
     - 不提供周期平均配速（纯运动总时长缺失，见 models 契约注释）
     """
     distances: list[float] = []
+    calories_list: list[float] = []
+    ascents: list[float] = []
+    descents: list[float] = []
+    steps_list: list[int] = []
     durations: list[float] = []
     avg_hrs: list[float] = []
     max_hrs: list[float] = []
@@ -51,6 +55,14 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
 
         if record.distance is not None:
             distances.append(float(record.distance))
+        if record.calories is not None:
+            calories_list.append(float(record.calories))
+        if record.ascent is not None:
+            ascents.append(float(record.ascent))
+        if record.descent is not None:
+            descents.append(float(record.descent))
+        if record.steps is not None:
+            steps_list.append(int(record.steps))
 
         duration = _duration_of(record)
         if duration is not None:
@@ -90,6 +102,13 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
         period_end=max(ends) if ends else None,
         total_distance=sum(distances) if distances else None,
         distance_activity_count=len(distances),
+        total_calories=sum(calories_list) if calories_list else None,
+        calories_activity_count=len(calories_list),
+        total_ascent=sum(ascents) if ascents else None,
+        total_descent=sum(descents) if descents else None,
+        ascent_activity_count=len(ascents),
+        total_steps=sum(steps_list) if steps_list else None,
+        steps_activity_count=len(steps_list),
         total_duration_seconds=sum(durations),
         duration_activity_count=len(durations),
         average_distance=(

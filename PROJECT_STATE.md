@@ -5,7 +5,7 @@
 
 ## Current Phase
 
-Phase 6.7（多活动周期聚合：TrainingPeriodSummary + get_training_period_summary）— **PASS**
+Phase 6.8（周期聚合增强：calories/ascent/descent/steps）— **PASS**
 
 ## Completed
 
@@ -21,6 +21,7 @@ Phase 6.7（多活动周期聚合：TrainingPeriodSummary + get_training_period_
 - Phase 6.5：get_recent_activities 的 limit 边界校验（1~MAX_LIST_LIMIT=100，MCP 入口层；内部 DETAIL_LOOKUP_LIMIT 路径不受影响）；README 全面重写（4 tools 说明 / 环境变量凭证表 / MCP 客户端配置示例 / 安装与测试指引——供用户真实客户端验收）；+2 测试
 - Phase 6.6：**修复重大契约缺口**——真实记录统计字段嵌套在 activitySummary.{dataSummary,performanceSummary,paceSummary} 下，此前 parser 只读顶层导致真实列表的 HR/距离/配速/VO2max 全部丢失为 None（Phase 5"轻量摘要"结论有误，数据一直存在）；parser 改为嵌套优先+顶层兼容双路径；新增 SessionMetrics 模型 + compute_session_metrics（双源：device_summary 权威优先/samples 聚合回退，source 字段标记来源）+ get_session_metrics tool + fetch_session_data（一次定位同时返回 record+detail，fetch_activity_detail 变薄包装签名不变）；+10 测试；真实数据全链路验证（HR 164/188/93、distance 7010m、pace 351.5/309 s/km、duration 2713s；双源交叉：设备配速 vs 采样换算差 7 s/km，采样含静止段）
 - Phase 6.7：period_analysis.py（aggregate_activity_period 纯函数：count/距离/历时/HR 聚合 + activityType 原样分组）+ TrainingPeriodSummary/ActivityTypeSummary 模型 + get_training_period_summary(lookback_days=7, limit=100) tool（复用 fetch_recent_activities，一次列表请求即可聚合）；真实 fixture（5 条：4×type90+1×type56，总距 20400m）离线聚合 + 手写逐条交叉验证通过；+16 测试
+- Phase 6.8：ActivityRecord + calories/ascent/descent/steps 字段（parser 从嵌套 dataSummary 映射：calories.burnt.total/altitude.statistics/steps.total）；TrainingPeriodSummary + 对应 total 字段与 *_activity_count；真实数据 5/5 稳定提供（总卡 917.0 / 爬升 70.6 / 下降 65.7 / 步数 26769 精确断言）；未聚合：stride.avg（单位未确认）、resting_calories（跨活动语义不明）、steps.total.duration（单位未知）→ 记录待决；+5 测试
 
 ## Code Status
 
@@ -39,7 +40,7 @@ tests/   9 个测试文件 + 2 个 synthetic fixtures（无真实用户数据；
 
 ## Tests
 
-`python -m pytest`（项目根，.venv）→ **94 passed**（parser 7 + client 8 + tools 9 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2 + metrics 8 + period 16）
+`python -m pytest`（项目根，.venv）→ **99 passed**（parser 8 + client 8 + tools 9 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2 + metrics 8 + period 20）
 
 ## Architecture Decisions
 
@@ -95,6 +96,13 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 - posture statistics 中 -1 为无效标记（如 avg_swing_angle=-1），不是真实生理数据
 - resting_heart_rate.statistics 未在真实样本中出现（列表+detail 均无）
 
+### 周期聚合扩展契约（Phase 6.8）
+
+- ActivityRecord 新增 calories（kcal，设备口径原值）/ ascent / descent（米）/ steps（int 计数），全部来自嵌套 dataSummary，缺失即 None
+- 周期聚合为设备原值求和（不做单位换算）；全缺→None 不伪造 0；各自带 *_activity_count；ascent_activity_count 同时覆盖 descent（同源 altitude.statistics）
+- 平均值语义不变：average_x 一律为有效活动算术平均（无加权），加权平均若未来需要另建字段
+- 明确不聚合：stride.avg（单位未确认）、resting_calories（跨活动语义不明）、steps.total 内嵌 duration（单位未知）
+
 ### 周期聚合契约（Phase 6.7）
 
 - duration = 每条记录 end-start 总历时（含间歇），非纯运动时间（activeTime 单位未决）；单位秒
@@ -119,6 +127,7 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 5. 真实数据观察（非 bug）：location 采样内嵌 altitude 字段恒 0，真实海拔以 altitude collector 为准；posture 高频采样部分字段恒 0、statistics 部分 -1 为无效标记
 6. pagination：list 响应顶层为纯数组（无 page/hasNext/total 等包裹字段——已勘探证据）；limit>5 的服务端行为未验证（需真实凭证）；未实现分页（无真实证据不伪造）
 7. HR Zone / 配速区间标准未定（Manager 决策）；SessionMetrics 已提供双源基础数据，zone 计算的标准确定后可在 analysis.py 增量实现
+8. stride.statistics(avg) 单位未确认（cm? m?）——数据存在但不聚合；resting_calories.statistics 跨活动语义不明——不聚合；steps.total 内嵌 duration 单位未知——不解析
 
 ## Risks
 
@@ -127,8 +136,8 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Next Action
 
-1) 【需 Manager 决策】HR Zone / 配速区间标准；activityType→运动名映射（如 56=running 是否可靠）；周期平均配速语义（elapsed-based vs 纯运动时间——依赖 activeTime 单位裁决）2) 【需用户】真实 MCP 客户端验收六个 tool（README 有配置示例）3) 【可自主】多周期对比（周环比等纯聚合）；stride/calories/altitude 爬升等字段纳入 period 聚合；scripts/test_real_htc.py 增加 period 模式。
+1) 【需 Manager 决策】activityType→运动名映射；HR/配速 Zone 标准；周期配速语义（依赖 activeTime 裁决）；stride 单位确认 2) 【需用户/真实凭证】真实 MCP 客户端验收六个 tool（README 配置示例已就绪）；分页行为验证（limit>5） 3) 【可自主】多周期对比（周环比纯聚合）；test_real_htc.py 增加 period 模式；get_recent_activities 输出已自动含新字段（calories/ascent/descent/steps）可顺带在真实客户端验收时确认。
 
 ## Last Updated
 
-2026-08-16（Phase 6.7 完成时）
+2026-08-16（Phase 6.8 完成时）

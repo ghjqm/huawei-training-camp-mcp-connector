@@ -41,6 +41,10 @@ class ActivityRecord(BaseModel):
     activity_type: Optional[int] = None  # HTC 实际返回整数（如 90、56），已由真实响应确认
     active_time: Optional[int] = None  # 秒
     distance: Optional[float] = None   # 米
+    calories: Optional[float] = None   # kcal（activitySummary calories_total，设备口径原值）
+    ascent: Optional[float] = None     # 米（累计爬升，altitude.statistics ascent_total）
+    descent: Optional[float] = None    # 米（累计下降，descent_total）
+    steps: Optional[int] = None        # 步数（steps.total，计数语义）
 
     # 心率
     avg_heart_rate: Optional[float] = None  # bpm
@@ -220,6 +224,13 @@ class TrainingPeriodSummary(BaseModel):
 
     total_distance: Optional[float] = None
     distance_activity_count: int = 0
+    total_calories: Optional[float] = None    # kcal（设备口径原值求和）
+    calories_activity_count: int = 0
+    total_ascent: Optional[float] = None      # 米
+    total_descent: Optional[float] = None     # 米（与 ascent 同源同可用性）
+    ascent_activity_count: int = 0            # 同时覆盖 descent 的有效样本数
+    total_steps: Optional[int] = None
+    steps_activity_count: int = 0
     total_duration_seconds: float = 0.0
     duration_activity_count: int = 0
 

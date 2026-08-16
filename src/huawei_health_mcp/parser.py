@@ -180,6 +180,15 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
     speed = summary.get("com.huawei.continuous.speed.statistics", {})
     avg_speed = _find_field(speed, "averageSpeed", "avgSpeed", "average", "avg")
     max_speed = _find_field(speed, "maxSpeed", "max")
+
+    # Phase 6.8：周期聚合候选字段（真实数据 5/5 记录稳定提供）
+    cal = summary.get("com.huawei.continuous.calories.burnt.total", {})
+    calories = _find_field(cal, "calories_total", "caloriesTotal", "totalCalories")
+    alt = summary.get("com.huawei.continuous.altitude.statistics", {})
+    ascent = _find_field(alt, "ascent_total", "ascentTotal")
+    descent = _find_field(alt, "descent_total", "descentTotal")
+    steps_stat = summary.get("com.huawei.continuous.steps.total", {})
+    steps = _find_field(steps_stat, "steps", "stepCount", "totalSteps")
     # 配速：设备 paceSummary 的权威值优先（单位：秒/公里，Phase 6.6 真实
     # 数据交叉验证：avgPace 351.5 ≈ 1000/avgSpeed 351.1）；缺失时由速度推导
     auth_avg_pace = _as_float(pace_summary.get("avgPace")) if isinstance(pace_summary, dict) else None
@@ -198,6 +207,10 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
         activity_type=raw.get("activityType") or raw.get("type"),
         active_time=_as_int(raw.get("activeTime")),
         distance=_as_float(distance),
+        calories=_as_float(calories),
+        ascent=_as_float(ascent),
+        descent=_as_float(descent),
+        steps=_as_int(steps),
         avg_heart_rate=_as_float(avg_hr),
         max_heart_rate=_as_float(max_hr),
         min_heart_rate=_as_float(min_hr),

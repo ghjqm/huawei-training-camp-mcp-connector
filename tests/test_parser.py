@@ -110,3 +110,27 @@ def test_top_level_summary_still_supported():
     }
     rec = parse_activity_record(raw)
     assert rec.avg_heart_rate == 150.0 and rec.vo2_max == 45.0
+
+def test_record_calories_ascent_descent_steps_mapping():
+    """Phase 6.8：calories/ascent/descent/steps 从嵌套 dataSummary 正确映射。"""
+    raw = {
+        "id": "cal-1", "activityType": 56,
+        "startTime": 1786706473000, "endTime": 1786709186000,
+        "activitySummary": {"dataSummary": [
+            {"dataTypeName": "com.huawei.continuous.calories.burnt.total",
+             "value": [{"fieldName": "calories_total", "floatValue": 406.0}]},
+            {"dataTypeName": "com.huawei.continuous.altitude.statistics",
+             "value": [{"fieldName": "ascent_total", "floatValue": 20.3},
+                       {"fieldName": "descent_total", "floatValue": 22.0},
+                       {"fieldName": "max", "floatValue": 1500.5},
+                       {"fieldName": "min", "floatValue": 1488.9}]},
+            {"dataTypeName": "com.huawei.continuous.steps.total",
+             "value": [{"fieldName": "duration", "integerValue": 999999},
+                       {"fieldName": "steps", "integerValue": 6621}]},
+        ]},
+    }
+    rec = parse_activity_record(raw)
+    assert rec.calories == 406.0
+    assert rec.ascent == 20.3 and rec.descent == 22.0
+    assert rec.steps == 6621 and isinstance(rec.steps, int)
+    # max/min 等其他 fieldName 不进入模型（最小字段集）

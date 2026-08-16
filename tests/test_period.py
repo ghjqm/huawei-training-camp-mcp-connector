@@ -193,6 +193,8 @@ def test_tool_full_chain():
          "activitySummary": {"dataSummary": [
              {"dataTypeName": "com.huawei.continuous.distance.total",
               "value": [{"fieldName": "distance", "floatValue": 5000.0}]},
+             {"dataTypeName": "com.huawei.continuous.calories.burnt.total",
+              "value": [{"fieldName": "calories_total", "floatValue": 400.0}]},
              {"dataTypeName": "com.huawei.continuous.heart_rate.statistics",
               "value": [{"fieldName": "avg", "floatValue": 160.0},
                         {"fieldName": "max", "floatValue": 180.0}]},
@@ -206,6 +208,8 @@ def test_tool_full_chain():
 
     assert result["activity_count"] == 1
     assert result["total_distance"] == 5000.0
+    assert result["total_calories"] == 400.0
+    assert result["calories_activity_count"] == 1
     assert result["total_duration_seconds"] == 3600.0
     assert result["average_heart_rate"] == 160.0
     assert result["activity_types"][0]["activity_type"] == 56
@@ -276,3 +280,55 @@ def test_real_records_aggregation_matches_manual():
     if avg_hrs:
         assert s.average_heart_rate == pytest.approx(sum(avg_hrs) / len(avg_hrs))
         assert s.hr_activity_count == len(avg_hrs)
+
+# ---------------- Phase 6.8：calories / ascent / descent / steps ----------------
+
+def test_new_field_totals_multi():
+    """多活动：卡路里/爬升/下降/步数求和 + 有效样本数。"""
+    recs = [
+        _rec("a", _t(6), _t(7), 56, 5000.0),
+        _rec("b", _t(9), _t(10), 90, 3000.0),
+    ]
+    recs[0].calories, recs[0].ascent, recs[0].descent, recs[0].steps = 400.0, 30.0, 25.0, 6000
+    recs[1].calories, recs[1].ascent, recs[1].descent, recs[1].steps = 100.0, 10.0, 5.0, 2000
+    s = aggregate_activity_period(recs)
+    assert s.total_calories == 500.0 and s.calories_activity_count == 2
+    assert s.total_ascent == 40.0 and s.total_descent == 30.0
+    assert s.ascent_activity_count == 2
+    assert s.total_steps == 8000 and isinstance(s.total_steps, int)
+    assert s.steps_activity_count == 2
+
+
+def test_new_fields_all_missing_none():
+    """全部缺失：None（不伪造 0），计数为 0。"""
+    s = aggregate_activity_period([_rec("a", _t(6), _t(7), 56, 100.0)])
+    assert s.total_calories is None and s.calories_activity_count == 0
+    assert s.total_ascent is None and s.total_descent is None
+    assert s.ascent_activity_count == 0
+    assert s.total_steps is None and s.steps_activity_count == 0
+
+
+def test_new_fields_partial_availability():
+    """部分缺失：只聚合有效值；ascent 有则 descent 视为同源可用（分别聚合）。"""
+    recs = [_rec("a", _t(6), _t(7), 56), _rec("b", _t(9), _t(10), 56)]
+    recs[0].calories, recs[0].ascent, recs[0].descent = 300.0, 10.0, 8.0
+    recs[1].calories = 200.0  # 无海拔
+    s = aggregate_activity_period(recs)
+    assert s.total_calories == 500.0 and s.calories_activity_count == 2
+    assert s.total_ascent == 10.0 and s.total_descent == 8.0
+    assert s.ascent_activity_count == 1
+    assert s.total_steps is None
+
+
+def test_real_records_new_fields_exact():
+    """真实 fixture（data_temp 5 条）：新字段聚合值与勘探核对值精确一致。"""
+    if not REAL_RECORDS.exists():
+        pytest.skip("real fixture 不存在")
+    raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
+    s = aggregate_activity_period([parse_activity_record(r) for r in raw])
+    assert s.total_calories == 917.0
+    assert s.total_ascent == 70.6 and s.total_descent == 65.7
+    assert s.total_steps == 26769
+    assert s.calories_activity_count == 5
+    assert s.ascent_activity_count == 5
+    assert s.steps_activity_count == 5
