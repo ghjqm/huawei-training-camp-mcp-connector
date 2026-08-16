@@ -320,3 +320,45 @@ class TrainingTrendSummary(BaseModel):
     anchor: datetime
     window_days: int = 7
     weeks: list[TrainingWeekSummary] = Field(default_factory=list)
+
+
+class WeekDeltaTransition(BaseModel):
+    """相邻两个 7 天周窗口的环比变化（Phase 6.11，older → newer）。
+
+    - 数学契约完全复用 MetricComparison / compare_metric（Phase 6.9）：
+      delta = current - baseline；任一侧 None → delta=None（None≠0）；
+      baseline 为 None 或 ==0 → percentage_change=None；count 类保持 int
+    - baseline=older 周，current=newer 周；transitions 按时间升序排列
+    - HR 继承 6.7 设备 summary 聚合来源；有效样本数不在此重复展开，
+      由 trend.weeks[].summary.hr_activity_count 保真（同 6.9 契约）
+    """
+
+    baseline_window_start: datetime
+    baseline_window_end: datetime
+    current_window_start: datetime
+    current_window_end: datetime
+
+    activity_count: MetricComparison = Field(default_factory=MetricComparison)
+    total_distance: MetricComparison = Field(default_factory=MetricComparison)
+    total_calories: MetricComparison = Field(default_factory=MetricComparison)
+    total_steps: MetricComparison = Field(default_factory=MetricComparison)
+    total_ascent: MetricComparison = Field(default_factory=MetricComparison)
+    total_descent: MetricComparison = Field(default_factory=MetricComparison)
+    total_duration_seconds: MetricComparison = Field(default_factory=MetricComparison)
+    average_heart_rate: MetricComparison = Field(default_factory=MetricComparison)
+    max_heart_rate: MetricComparison = Field(default_factory=MetricComparison)
+
+
+class TrainingTrendDelta(BaseModel):
+    """周趋势环比容器（Phase 6.11，纯聚合，无业务标准）。
+
+    - 窗口边界/顺序完全继承 TrainingTrendSummary（Phase 6.10 同一锚点
+      半开区间），本层不重新定义任何窗口语义
+    - transitions 按时间升序（最旧的相邻对在前），weeks=N 最多 N-1 个；
+      weeks=1 时为空列表（无上一周可比较）
+    - 不含周期配速；不解释 activityType 语义
+    """
+
+    anchor: datetime
+    window_days: int = 7
+    transitions: list[WeekDeltaTransition] = Field(default_factory=list)

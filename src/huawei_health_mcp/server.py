@@ -23,13 +23,14 @@ from fastmcp import FastMCP
 from .analysis import compute_session_metrics, summarize_activity_detail
 from .period_analysis import aggregate_activity_period
 from .period_comparison import compare_training_periods
-from .trend_analysis import aggregate_weekly_trend
+from .trend_analysis import aggregate_weekly_trend, compute_weekly_trend_delta
 from .client import HTCClient, HTCClientError
 from .models import (
     ActivityDetail,
     ActivityRecord,
     TrainingPeriodComparison,
     TrainingSummary,
+    TrainingTrendDelta,
     TrainingTrendSummary,
 )
 from .parser import parse_activity_detail, parse_activity_record
@@ -358,6 +359,21 @@ def fetch_weekly_trend(
     return aggregate_weekly_trend(records, weeks=weeks, now=now)
 
 
+def fetch_weekly_trend_delta(
+    client: HTCClient,
+    weeks: int = 4,
+    limit: int = 100,
+) -> TrainingTrendDelta:
+    """取最近 N 个连续周窗口并计算相邻周环比。
+
+    单次列表请求整个跨度 → aggregate_weekly_trend（一次聚合）→
+    compute_weekly_trend_delta（复用 Phase 6.9 compare_metric）。
+    无重复请求、无重复聚合；weeks=1 时 transitions=[]。
+    """
+    trend = fetch_weekly_trend(client, weeks=weeks, limit=limit)
+    return compute_weekly_trend_delta(trend)
+
+
 @mcp.tool()
 def health_check() -> dict:
     """健康检查：确认 MCP 服务是否正常运行。
@@ -665,6 +681,50 @@ def get_training_weekly_trend(weeks: int = 4, limit: int = 100) -> dict:
     finally:
         client.close()
     return trend.model_dump(mode="json")
+
+
+@mcp.tool()
+def get_training_weekly_trend_delta(weeks: int = 4, limit: int = 100) -> dict:
+    """获取最近 N 个连续周窗口的相邻周环比变化（纯数学，无业务标准）。
+
+    与 get_training_weekly_trend 使用完全相同的窗口切分（同一时间
+    锚点、滚动 7 天半开区间、不重叠），对每对相邻周 older → newer
+    输出各指标的 MetricComparison（baseline / current / delta /
+    percentage_change）。
+
+    参数：
+        weeks: 周窗口数（默认 4，范围 1~104；环比最多 weeks-1 对）。
+        limit: 整个跨度最多查询多少条训练（默认 100，范围 1~100）。
+
+    返回：
+        anchor / window_days=7 / transitions 数组（时间升序，最旧的
+        相邻对在前），每个 transition 含 baseline 与 current 窗口的
+        起止时间，以及以下指标的对比：活动次数 / 总距离 / 总历时 /
+        总卡路里 / 步数 / 累计爬升 / 累计下降 / 平均与最大心率。
+        weeks=1 时 transitions 为空数组（无上一周可比较）。
+
+    语义说明：
+        - delta = current - baseline；任一侧缺失(None) → delta=None
+          （缺失≠0，不伪造数据）
+        - percentage_change 在 baseline 缺失或为 0 时为 None（不除零）
+        - count 类 delta 保持 int（0=真实零，恒可计算）
+        - 心率只对比设备 summary 聚合值；每周有效样本数由
+          get_training_weekly_trend 的 hr_activity_count 提供
+        - duration 为每条记录起止时间差的总历时（含间歇）
+        - 不提供周期配速；不解释 activityType 数值的运动名称
+
+    错误：
+        非法 weeks / limit 抛 ValueError；认证/HTTP 错误以
+        HTCClientError 族异常清晰报告。
+    """
+    _validate_weeks(weeks)
+    _validate_limit(limit)
+    client = create_htc_client()
+    try:
+        delta = fetch_weekly_trend_delta(client, weeks=weeks, limit=limit)
+    finally:
+        client.close()
+    return delta.model_dump(mode="json")
 
 
 if __name__ == "__main__":

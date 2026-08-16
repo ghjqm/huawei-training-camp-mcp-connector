@@ -5,7 +5,7 @@
 
 ## Current Phase
 
-Phase 6.10（连续周趋势 rolling weekly trend + 第 8 个 tool）— **PASS**
+Phase 6.11（周趋势环比 Week-over-Week Delta + 第 9 个 tool）— **PASS**
 
 ## Completed
 
@@ -23,6 +23,7 @@ Phase 6.10（连续周趋势 rolling weekly trend + 第 8 个 tool）— **PASS*
 - Phase 6.7：period_analysis.py（aggregate_activity_period 纯函数：count/距离/历时/HR 聚合 + activityType 原样分组）+ TrainingPeriodSummary/ActivityTypeSummary 模型 + get_training_period_summary(lookback_days=7, limit=100) tool（复用 fetch_recent_activities，一次列表请求即可聚合）；真实 fixture（5 条：4×type90+1×type56，总距 20400m）离线聚合 + 手写逐条交叉验证通过；+16 测试
 - Phase 6.8：ActivityRecord + calories/ascent/descent/steps 字段（parser 从嵌套 dataSummary 映射：calories.burnt.total/altitude.statistics/steps.total）；TrainingPeriodSummary + 对应 total 字段与 *_activity_count；真实数据 5/5 稳定提供（总卡 917.0 / 爬升 70.6 / 下降 65.7 / 步数 26769 精确断言）；未聚合：stride.avg（单位未确认）、resting_calories（跨活动语义不明）、steps.total.duration（单位未知）→ 记录待决；+5 测试
 - Phase 6.9：period_comparison.py（compare_metric / compare_training_periods 纯函数）+ MetricComparison / TrainingPeriodComparison 模型 + fetch_period_comparison（连续双窗口 [now-2N,now-N)/[now-N,now)，单 now 锚点边界精确连续，返回记录按自身 start_time 半开区间过滤保证窗口语义）+ get_training_period_comparison(window_days=7, limit=100) tool（第 7 个）；test_real_htc.py 新增 period / comparison 模式；真实 fixture 按时间拆 2/3 合成周期交叉验证（SYNTHETIC COMPARISON VALIDATION）；+30 测试（含参数化）
+- Phase 6.11：compute_weekly_trend_delta（消费 TrainingTrendSummary → TrainingTrendDelta，100% 复用 Phase 6.9 compare_metric 零数学复制；相邻周 older→newer，weeks=N 最多 N-1 对，weeks=1 → transitions=[]）+ WeekDeltaTransition（内嵌 7 项必选指标 + HR avg/max 的 MetricComparison，窗口边界直接取自 trend.weeks 不重新定义）+ fetch_weekly_trend_delta（单次请求 → 一次聚合 → 环比，无重复请求/聚合）+ get_training_weekly_trend_delta(weeks=4, limit=100) tool（第 9 个）；真实 fixture 验证解析/归窗/环比结构（1.43 天跨度，空周→5条周：delta=+5、pct=None）+ synthetic 拆窗环比与 compare_metric 交叉验证；+20 测试
 - Phase 6.10：trend_analysis.py（build_week_windows / aggregate_weekly_trend 纯函数，每窗口复用 aggregate_activity_period 零复制）+ TrainingWeekSummary（内嵌完整 TrainingPeriodSummary）/ TrainingTrendSummary 模型 + fetch_weekly_trend（单次列表请求整个跨度 [now-weeks*7d, now)，同一 now 用于请求与切分 → 零边界漂移）+ get_training_weekly_trend(weeks=4, limit=100) tool（第 8 个，weeks 上限 104=730//7）；真实 fixture 实际跨度仅 1.43 天 → 只做解析/归窗验证 + Phase 6.8 精确总量交叉验证（20400/917/70.6/65.7/26769），跨周逻辑 synthetic 覆盖；+26 测试
 
 ## Code Status
@@ -36,15 +37,15 @@ src/huawei_health_mcp/
 ├── analysis.py   summarize_activity_detail + compute_session_metrics（确定性聚合，双源，无 AI）
 ├── period_analysis.py   aggregate_activity_period：多 ActivityRecord → TrainingPeriodSummary
 ├── period_comparison.py   compare_training_periods：两个 TrainingPeriodSummary → TrainingPeriodComparison
-├── trend_analysis.py   build_week_windows + aggregate_weekly_trend：连续 7 天周窗口趋势（复用聚合层）
-└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail / get_training_summary / get_session_metrics / get_training_period_summary / get_training_period_comparison / get_training_weekly_trend
+├── trend_analysis.py   build_week_windows + aggregate_weekly_trend + compute_weekly_trend_delta：周趋势与环比（复用聚合层/比较层）
+└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail / get_training_summary / get_session_metrics / get_training_period_summary / get_training_period_comparison / get_training_weekly_trend / get_training_weekly_trend_delta
 scripts/test_real_htc.py   人工真实请求脚本（list / detail / period / comparison 四模式，凭证只从环境变量）
-tests/   11 个测试文件 + 2 个 synthetic fixtures（无真实用户数据；真实 fixture 聚合/对比/趋势测试在无 data_temp 时自动 skip）
+tests/   12 个测试文件 + 2 个 synthetic fixtures（无真实用户数据；真实 fixture 聚合/对比/趋势测试在无 data_temp 时自动 skip）
 ```
 
 ## Tests
 
-`python -m pytest`（项目根，.venv）→ **155 passed**（parser 8 + client 8 + tools 9 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2 + metrics 8 + period 20 + comparison 30 + trend 26）
+`python -m pytest`（项目根，.venv）→ **175 passed**（parser 8 + client 8 + tools 9 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2 + metrics 8 + period 20 + comparison 30 + trend 26 + trend delta 20）
 
 ## Architecture Decisions
 
@@ -99,6 +100,15 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 - paceSummary.avgPace/bestPace 单位 = 秒/公里（交叉验证：351.5 ≈ 1000/2.848 avgSpeed）；paceMap/partTimeMap 键=公里（字符串），值=秒，partTimeMap 为累计时间
 - posture statistics 中 -1 为无效标记（如 avg_swing_angle=-1），不是真实生理数据
 - resting_heart_rate.statistics 未在真实样本中出现（列表+detail 均无）
+
+### 周环比契约（Phase 6.11）
+
+- 只比较相邻两个 7 天滚动窗口：older（baseline）→ newer（current）；weeks=N 最多 N-1 对；weeks=1 → transitions=[]（空，最小合理结果）
+- 数学 100% 复用 compare_metric（Phase 6.9）：delta=current-baseline；任一侧 None→delta=None（None≠0）；baseline None/==0→pct=None；count 类保持 int
+- 窗口边界/顺序直接取自 trend.weeks（继承 6.10 同一锚点半开区间），本层不重新定义；transitions 时间升序（最旧相邻对在前）
+- 每对覆盖：activity_count / total_distance / total_duration_seconds / total_calories / total_steps / total_ascent / total_descent + HR avg/max（设备 summary 来源契约；hr_activity_count 由 get_training_weekly_trend 的 weeks[].summary 保真，不在 transition 重复）
+- fetch 单次列表请求 → aggregate_weekly_trend（一次聚合）→ compute_weekly_trend_delta，无重复请求/聚合
+- 不含周期配速；不解释 activityType 语义
 
 ### 周趋势契约（Phase 6.10）
 
@@ -159,8 +169,8 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Next Action
 
-1) 【需 Manager 决策】activityType→运动名映射；HR/配速 Zone 标准；周期配速语义（依赖 activeTime 裁决）；stride 单位确认 2) 【需用户/真实凭证】真实 MCP 客户端验收八个 tool（README 配置示例已就绪）；分页行为验证（limit>5）；历史窗口 list 行为验证（scripts/test_real_htc.py comparison 7 一次即可，输出已含 0 条歧义提示）；真实跨周趋势数据需积累 >7 天训练后验收 3) 【可自主】趋势周间 delta（在 TrainingTrendSummary 上叠加逐周环比，复用 compare_metric）；test_real_htc.py 增加 trend 模式；comparison 支持任意错位窗口（如 vs 上上月）若 Manager 需要再扩展。
+1) 【需 Manager 决策】activityType→运动名映射；HR/配速 Zone 标准；周期配速语义（依赖 activeTime 裁决）；stride 单位确认 2) 【需用户/真实凭证】真实 MCP 客户端验收九个 tool（README 配置示例已就绪）；分页行为验证（limit>5）；历史窗口 list 行为验证（scripts/test_real_htc.py comparison 7 一次即可，输出已含 0 条歧义提示）；真实跨周趋势数据需积累 >7 天训练后验收 3) 【可自主】test_real_htc.py 增加 trend / trend-delta 模式；多趋势指标叠加（如月度滚动窗口）若 Manager 需要再扩展；comparison 支持任意错位窗口（如 vs 上上月）若 Manager 需要再扩展。
 
 ## Last Updated
 
-2026-08-16（Phase 6.10 完成时）
+2026-08-16（Phase 6.11 完成时）

@@ -15,8 +15,15 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from .models import ActivityRecord, TrainingTrendSummary, TrainingWeekSummary
+from .models import (
+    ActivityRecord,
+    TrainingTrendDelta,
+    TrainingTrendSummary,
+    TrainingWeekSummary,
+    WeekDeltaTransition,
+)
 from .period_analysis import aggregate_activity_period
+from .period_comparison import compare_metric
 
 # 周窗口长度（天）：滚动窗口，非自然周
 WINDOW_DAYS = 7
@@ -78,4 +85,57 @@ def aggregate_weekly_trend(
             )
             for (start, end), bucket in zip(windows, buckets)
         ],
+    )
+
+
+def compute_weekly_trend_delta(trend: TrainingTrendSummary) -> TrainingTrendDelta:
+    """把周趋势转成相邻周环比序列（纯函数，不修改输入）。
+
+    - 只比较相邻两个 7 天滚动窗口：older（baseline）→ newer（current）
+    - 数学完全复用 compare_metric（Phase 6.9），零重复实现：
+      None≠0 / baseline==0 不除零 / count 类保持 int
+    - 窗口边界与顺序直接取自 trend.weeks（继承 Phase 6.10 同一锚点
+      半开区间），本函数不重新定义任何窗口语义
+    - weeks=1 → transitions=[]（无上一周可比较，最小合理结果）
+    - HR 仅对比 average/max（设备 summary 聚合，6.7 来源契约）；
+      有效样本数由 trend.weeks[].summary.hr_activity_count 保真
+    """
+    transitions: list[WeekDeltaTransition] = []
+    for older, newer in zip(trend.weeks, trend.weeks[1:]):
+        b, c = older.summary, newer.summary
+        transitions.append(
+            WeekDeltaTransition(
+                baseline_window_start=older.window_start,
+                baseline_window_end=older.window_end,
+                current_window_start=newer.window_start,
+                current_window_end=newer.window_end,
+                activity_count=compare_metric(
+                    b.activity_count, c.activity_count
+                ),
+                total_distance=compare_metric(
+                    b.total_distance, c.total_distance
+                ),
+                total_calories=compare_metric(
+                    b.total_calories, c.total_calories
+                ),
+                total_steps=compare_metric(b.total_steps, c.total_steps),
+                total_ascent=compare_metric(b.total_ascent, c.total_ascent),
+                total_descent=compare_metric(
+                    b.total_descent, c.total_descent
+                ),
+                total_duration_seconds=compare_metric(
+                    b.total_duration_seconds, c.total_duration_seconds
+                ),
+                average_heart_rate=compare_metric(
+                    b.average_heart_rate, c.average_heart_rate
+                ),
+                max_heart_rate=compare_metric(
+                    b.max_heart_rate, c.max_heart_rate
+                ),
+            )
+        )
+    return TrainingTrendDelta(
+        anchor=trend.anchor,
+        window_days=trend.window_days,
+        transitions=transitions,
     )

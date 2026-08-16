@@ -19,6 +19,7 @@ Huawei Training Camp / Huawei Health 网页端的运动训练数据。
 | `get_training_period_summary(lookback_days=7, limit=100)` | 一段周期内多次训练聚合（次数 / 总距离 / 总历时 / 平均与最大单次 / 心率 / 卡路里 / 累计爬升下降 / 步数 / 按 activityType 分组），类型值原样保留不命名语义 |
 | `get_training_period_comparison(window_days=7, limit=100)` | 两个连续周期对比：最近 N 天 vs 之前 N 天（每指标 baseline / current / delta / percentage_change；缺失≠0，baseline 为 0 或缺失时 pct 为 None 不除零） |
 | `get_training_weekly_trend(weeks=4, limit=100)` | 最近 N 个连续周窗口的训练量趋势（滚动 7 天窗口、同一时间锚点、不重叠；每周完整周期聚合：次数/距离/历时/卡路里/步数/爬降/心率/类型分组） |
+| `get_training_weekly_trend_delta(weeks=4, limit=100)` | 相邻周环比（older → newer，最多 weeks-1 对；复用周期对比的 delta/percentage_change 数学契约；weeks=1 返回空数组） |
 
 - `lookback_days`：查询窗口天数，默认 30，范围 1~730；查更早的训练时调大。
 - `weeks`（周趋势）：周窗口数，默认 4，范围 1~104（总跨度 ≤728 天 ≤730 上限）；
