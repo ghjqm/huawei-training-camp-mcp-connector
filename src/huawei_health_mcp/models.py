@@ -185,3 +185,51 @@ class SessionMetrics(BaseModel):
 
     distance: Optional[float] = None
     distance_source: Optional[str] = None
+
+class ActivityTypeSummary(BaseModel):
+    """周期内单一 activityType 的基础统计（Phase 6.7）。
+
+    activity_type 只保留 HTC 原始值（int，如 56/90），不自行命名语义——
+    类型→运动名的映射未经真实证据确认，属 Manager 决策。
+    """
+
+    activity_type: int
+    count: int = 0
+    total_distance: Optional[float] = None  # 米；None=该类型无任何距离数据
+    total_duration_seconds: float = 0.0
+
+
+class TrainingPeriodSummary(BaseModel):
+    """一段查询周期内多次训练的聚合统计（Phase 6.7，纯数学，无业务标准）。
+
+    单位契约：distance=米，duration=秒。
+    语义契约：
+    - duration = 每条记录 end_time - start_time 的总历时（含间歇），
+      非纯运动时间（activeTime 单位存疑，见 PROJECT_STATE Known Issues）
+    - distance 只聚合设备权威 summary 值（不积分采样）；缺失活动不计入，
+      由 distance_activity_count 标记有效样本数
+    - HR 只聚合设备 summary 的 per-activity avg/max；hr_activity_count 标记
+      有效样本数；类型与来源不混（无 samples 来源混入）
+    - 不提供周期平均配速：纯运动总时长缺失（activeTime 单位未决），
+      elapsed-based 会与设备 avgPace 语义不一致（待 Manager 决策）
+    """
+
+    activity_count: int = 0
+    period_start: Optional[datetime] = None  # 最早活动 start_time
+    period_end: Optional[datetime] = None     # 最晚活动 end_time
+
+    total_distance: Optional[float] = None
+    distance_activity_count: int = 0
+    total_duration_seconds: float = 0.0
+    duration_activity_count: int = 0
+
+    average_distance: Optional[float] = None
+    average_duration_seconds: Optional[float] = None
+    max_distance: Optional[float] = None
+    max_duration_seconds: Optional[float] = None
+
+    average_heart_rate: Optional[float] = None
+    max_heart_rate: Optional[float] = None
+    hr_activity_count: int = 0
+
+    activity_types: list[ActivityTypeSummary] = Field(default_factory=list)

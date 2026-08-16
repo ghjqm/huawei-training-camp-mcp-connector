@@ -21,6 +21,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from .analysis import compute_session_metrics, summarize_activity_detail
+from .period_analysis import aggregate_activity_period
 from .client import HTCClient, HTCClientError
 from .models import ActivityDetail, ActivityRecord, TrainingSummary
 from .parser import parse_activity_detail, parse_activity_record
@@ -393,6 +394,44 @@ def get_session_metrics(
         client.close()
     metrics = compute_session_metrics(detail, record)
     return metrics.model_dump(mode="json")
+
+@mcp.tool()
+def get_training_period_summary(
+    lookback_days: int = 7, limit: int = 100
+) -> dict:
+    """获取一段周期内多次训练的聚合统计（纯数学，无业务标准）。
+
+    统计 lookback_days 天内最多 limit 条训练：活动次数、总距离、
+    总历时、平均/最大单次距离与时长、平均/最大心率（带有效样本数
+    标记），以及按 activityType 原样分组的数量/距离/历时统计
+    （类型值原样保留，如 56/90，不自行命名运动名）。
+
+    参数：
+        lookback_days: 周期窗口天数（默认 7，范围 1~730）。
+        limit: 最多聚合多少条训练（默认 100，范围 1~100）。
+
+    语义说明：
+        - duration 为每条记录起止时间差的总历时（含间歇），非纯运动
+          时间（activeTime 单位存疑，见项目文档）
+        - 距离只取设备权威统计，缺失活动不计入并由
+          distance_activity_count 标记有效数
+        - 不提供周期平均配速（纯运动总时长缺失，语义无法保证）
+
+    错误：
+        非法 lookback_days / limit 抛 ValueError；认证/HTTP 错误以
+        HTCClientError 族异常清晰报告。
+    """
+    _validate_limit(limit)
+    _validate_lookback_days(lookback_days)
+    client = create_htc_client()
+    try:
+        records = fetch_recent_activities(
+            client, limit=limit, lookback_days=lookback_days
+        )
+    finally:
+        client.close()
+    summary = aggregate_activity_period(records)
+    return summary.model_dump(mode="json")
 
 if __name__ == "__main__":
     # 默认以 stdio（标准输入输出）方式启动，这是 MCP 的标准通信方式。
