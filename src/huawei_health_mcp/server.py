@@ -22,8 +22,14 @@ from fastmcp import FastMCP
 
 from .analysis import compute_session_metrics, summarize_activity_detail
 from .period_analysis import aggregate_activity_period
+from .period_comparison import compare_training_periods
 from .client import HTCClient, HTCClientError
-from .models import ActivityDetail, ActivityRecord, TrainingSummary
+from .models import (
+    ActivityDetail,
+    ActivityRecord,
+    TrainingPeriodComparison,
+    TrainingSummary,
+)
 from .parser import parse_activity_detail, parse_activity_record
 
 # 创建一个 MCP 服务实例。
@@ -39,6 +45,10 @@ MAX_LOOKBACK_DAYS = 730
 # limit 允许的最大值：单次列表查询的防御性上限（MCP 入口校验；
 # 内部 DETAIL_LOOKUP_LIMIT 定位调用不受影响）
 MAX_LIST_LIMIT = 100
+
+# 周期对比单个窗口的最大天数（Phase 6.9）：两个连续窗口的总跨度
+# （2 * window_days）不得超过 MAX_LOOKBACK_DAYS 上限
+MAX_COMPARISON_WINDOW_DAYS = MAX_LOOKBACK_DAYS // 2  # 365
 
 # 查询活动详情时，在最近训练列表里定位目标活动最多扫描多少条记录
 DETAIL_LOOKUP_LIMIT = 50
@@ -104,6 +114,19 @@ def _validate_limit(limit: int) -> int:
         )
     return limit
 
+def _validate_window_days(window_days: int) -> int:
+    """校验周期对比的单窗口天数（Phase 6.9）。
+
+    1 ~ MAX_COMPARISON_WINDOW_DAYS（365）：两个连续窗口总跨度
+    （2 x window_days）不得超过 MAX_LOOKBACK_DAYS 上限。
+    """
+    if not 1 <= window_days <= MAX_COMPARISON_WINDOW_DAYS:
+        raise ValueError(
+            f"window_days 必须在 1~{MAX_COMPARISON_WINDOW_DAYS} 之间，"
+            f"当前为 {window_days}"
+        )
+    return window_days
+
 def _default_time_range(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> tuple[str, str]:
     """返回 (start_time, end_time) 毫秒级字符串时间戳。
 
@@ -112,6 +135,66 @@ def _default_time_range(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> tuple[str
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=lookback_days)
     return (str(int(start.timestamp() * 1000)), str(int(now.timestamp() * 1000)))
+
+
+def _window_bounds(
+    window_days: int, offset_days: int
+) -> tuple[datetime, datetime]:
+    """返回以“现在”为锚的窗口边界：[now - offset - N, now - offset)。
+
+    offset_days=0 → 当前窗口 [now-N, now)；
+    offset_days=window_days → 基线窗口 [now-2N, now-N)。半开区间，
+    相邻窗口共享边界值但不重叠。
+    """
+    end = datetime.now(timezone.utc) - timedelta(days=offset_days)
+    start = end - timedelta(days=window_days)
+    return start, end
+
+
+def _to_ms(dt: datetime) -> str:
+    """datetime → HTC 约定的毫秒级字符串时间戳。"""
+    return str(int(dt.timestamp() * 1000))
+
+
+def fetch_period_comparison(
+    client: HTCClient,
+    window_days: int = 7,
+    limit: int = 100,
+) -> TrainingPeriodComparison:
+    """取两个连续窗口并对比：基线 [now-2N, now-N) / 当前 [now-N, now)。
+
+    窗口语义由本层保证：对返回记录按其自身 start_time 做半开区间
+    [start, end) 过滤——历史窗口（endTime 在过去）的真实 API 行为
+    尚未用真实凭证验证，过滤确保即使服务端对过去区间行为宽松，
+    也不会把当前期记录混入基线（此时过滤为无操作）。
+    start_time 缺失的记录无法归入任何时间窗口，从两期都排除。
+    两次请求共用同一 now 锚点，窗口边界精确连续。
+    """
+    _validate_window_days(window_days)
+    _validate_limit(limit)
+
+    now = datetime.now(timezone.utc)
+    current_start = now - timedelta(days=window_days)
+    windows = [
+        (current_start - timedelta(days=window_days), current_start),  # baseline
+        (current_start, now),                                          # current
+    ]
+
+    summaries = []
+    for start_dt, end_dt in windows:
+        raw = client.query_activity_records(
+            start_time=_to_ms(start_dt), end_time=_to_ms(end_dt), limit=limit
+        )
+        records = [
+            parse_activity_record(item) for item in _extract_activity_list(raw)
+        ]
+        windowed = [
+            r for r in records
+            if r.start_time is not None and start_dt <= r.start_time < end_dt
+        ]
+        summaries.append(aggregate_activity_period(windowed))
+
+    return compare_training_periods(summaries[0], summaries[1])
 
 
 def _extract_activity_list(raw: Any) -> list[dict]:
@@ -432,6 +515,69 @@ def get_training_period_summary(
         client.close()
     summary = aggregate_activity_period(records)
     return summary.model_dump(mode="json")
+
+@mcp.tool()
+def get_training_period_comparison(window_days: int = 7, limit: int = 100) -> dict:
+    """对比两个连续训练周期：最近 N 天 vs 之前 N 天（纯数学，无业务标准）。
+
+    例如 window_days=7 表示“本周 vs 上周”：当前窗口 [now-7d, now)、
+    基线窗口 [now-14d, now-7d)，两窗相邻不重叠。每个对比指标输出
+    baseline / current / delta / percentage_change。
+
+    参数：
+        window_days: 单个周期窗口天数（默认 7，范围 1~365；
+            两窗口总跨度不得超 730 天上限）。
+        limit: 每个窗口最多聚合多少条训练（默认 100，范围 1~100）。
+
+    返回：
+        baseline_summary / current_summary（完整周期聚合，含各类
+        *_activity_count 与 activity_types 分组）+ 各指标的
+        MetricComparison（活动次数 / 总距离 / 总卡路里 / 爬升 /
+        下降 / 步数 / 总历时 / 平均与最大心率），以及两个查询窗口
+        的起止时间。
+
+    语义说明：
+        - delta = current - baseline；任一侧缺失(None) → delta=None
+          （缺失≠0，不伪造基线）
+        - percentage_change 在 baseline 缺失或为 0 时为 None（不除零）
+        - duration 为每条记录起止时间差的总历时（含间歇），继承
+          周期聚合契约
+        - 不提供周期配速对比（纯运动总时长缺失，语义无法保证）
+        - 心率只对比设备 summary 聚合值，hr_activity_count 随
+          内嵌 summary 保真
+
+    错误：
+        非法 window_days / limit 抛 ValueError；认证/HTTP 错误以
+        HTCClientError 族异常清晰报告。
+    """
+    _validate_window_days(window_days)
+    _validate_limit(limit)
+    client = create_htc_client()
+    try:
+        comparison = fetch_period_comparison(
+            client, window_days=window_days, limit=limit
+        )
+    finally:
+        client.close()
+
+    result = comparison.model_dump(mode="json")
+    # 查询窗口仅作展示参考（与 fetch 共用同一锚点规则；展示值与
+    # 实际请求可能存在毫秒级时钟差，不影响数据过滤语义）
+    now = datetime.now(timezone.utc)
+    current_start = now - timedelta(days=window_days)
+    baseline_end = current_start
+    baseline_start = baseline_end - timedelta(days=window_days)
+    result["window_days"] = window_days
+    result["baseline_window"] = {
+        "start": baseline_start.isoformat(),
+        "end": baseline_end.isoformat(),
+    }
+    result["current_window"] = {
+        "start": current_start.isoformat(),
+        "end": now.isoformat(),
+    }
+    return result
+
 
 if __name__ == "__main__":
     # 默认以 stdio（标准输入输出）方式启动，这是 MCP 的标准通信方式。

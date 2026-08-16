@@ -244,3 +244,49 @@ class TrainingPeriodSummary(BaseModel):
     hr_activity_count: int = 0
 
     activity_types: list[ActivityTypeSummary] = Field(default_factory=list)
+
+class MetricComparison(BaseModel):
+    """单一指标的跨周期对比（Phase 6.9，纯数学，无业务标准）。
+
+    数学契约：
+    - delta = current - baseline；任一侧为 None → delta=None
+      （None=无可靠数据，不得当作 0 参与运算；例如 baseline 距离
+      全缺时无法证明基线是 0，delta 只能是 None）
+    - percentage_change = (current - baseline) / baseline * 100；
+      baseline 为 None 或 ==0 → None（不制造除零，不伪造基线）
+    - count 类指标（int，0=真实零而非缺失）delta 恒可计算；
+      percentage_change 仍受 baseline==0 约束
+    - 类型保真：int 输入（如 activity_count）在 delta 中保持 int
+    """
+
+    baseline: Optional[float | int] = None
+    current: Optional[float | int] = None
+    delta: Optional[float | int] = None
+    percentage_change: Optional[float] = None
+
+
+class TrainingPeriodComparison(BaseModel):
+    """两个训练周期的可验证对比（Phase 6.9）。
+
+    - baseline/current 两个完整 TrainingPeriodSummary 原样内嵌：
+      各 *_activity_count（含 hr_activity_count）与 activity_types
+      分组随 summary 保真，不单独重复展开对比
+    - MetricComparison 层只覆盖总量与 HR 指标；average/max 单次值
+      不对比（可由内嵌 summary 直接读取，避免语义重复）
+    - HR 对比仅基于 per-activity device summary 聚合（继承 Phase 6.7
+      契约，不混入采样来源）；任一周期 HR 全缺 → 对比为 None
+    - 不包含周期配速对比（周期配速语义未决，见 PROJECT_STATE）
+    """
+
+    baseline_summary: TrainingPeriodSummary
+    current_summary: TrainingPeriodSummary
+
+    activity_count: MetricComparison = Field(default_factory=MetricComparison)
+    total_distance: MetricComparison = Field(default_factory=MetricComparison)
+    total_calories: MetricComparison = Field(default_factory=MetricComparison)
+    total_ascent: MetricComparison = Field(default_factory=MetricComparison)
+    total_descent: MetricComparison = Field(default_factory=MetricComparison)
+    total_steps: MetricComparison = Field(default_factory=MetricComparison)
+    total_duration_seconds: MetricComparison = Field(default_factory=MetricComparison)
+    average_heart_rate: MetricComparison = Field(default_factory=MetricComparison)
+    max_heart_rate: MetricComparison = Field(default_factory=MetricComparison)

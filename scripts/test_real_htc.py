@@ -3,8 +3,10 @@
 pytest 中的全部测试（tests/）仍然使用 MockTransport，不访问真实网络。
 
 运行方式（项目根目录，需先激活虚拟环境）：
-    python scripts/test_real_htc.py           # 列表模式：最近 7 天训练列表 + parser 验证
-    python scripts/test_real_htc.py detail    # 详情模式：单次训练高频 detail schema 勘探
+    python scripts/test_real_htc.py                  # 列表模式：最近 7 天训练列表 + parser 验证
+    python scripts/test_real_htc.py detail           # 详情模式：单次训练高频 detail schema 勘探
+    python scripts/test_real_htc.py period           # 周期模式：最近 7 天训练周期聚合验证
+    python scripts/test_real_htc.py comparison [N]   # 对比模式：最近 N 天 vs 之前 N 天（默认 7）
 
 前置条件（环境变量 -> HTTP 请求头，映射来自用户确认的浏览器成功请求）：
     HTC_AUTHORIZATION -> Authorization: Bearer <敏感值>
@@ -51,14 +53,21 @@ from src.huawei_health_mcp.client import (  # noqa: E402
     HTCClientError,
 )
 from src.huawei_health_mcp.parser import parse_activity_record  # noqa: E402
+from src.huawei_health_mcp.period_analysis import (  # noqa: E402
+    aggregate_activity_period,
+)
 from src.huawei_health_mcp.server import (  # noqa: E402
     _default_time_range,
     _extract_activity_list,
+    fetch_period_comparison,
 )
 
 # 列表模式：只查最近 7 天、最多 5 条，不请求过大历史范围
 LOOKBACK_DAYS = 7
 LIMIT = 5
+
+# 对比模式：两个窗口各取的条数上限（与 MCP tool 默认一致）
+MAX_LIST_LIMIT_FOR_COMPARISON = 100
 
 # 真实响应保存位置（.gitignore 已忽略 data_temp/，不会进入 Git）
 OUTPUT_FILE = PROJECT_ROOT / "data_temp" / "real_activity_records.json"
@@ -274,14 +283,117 @@ def run_list_mode(headers: dict[str, str]) -> int:
     return 0 if parsed_ok == len(records) else 1
 
 
+def _print_period_summary(label: str, summary) -> None:
+    """输出周期聚合的安全摘要（只含统计数字，无凭证/位置数据）。"""
+    print(f"[{label}]")
+    print(f"  activity_count={summary.activity_count} "
+          f"(distance valid: {summary.distance_activity_count}, "
+          f"hr valid: {summary.hr_activity_count})")
+    print(f"  total_distance={summary.total_distance} m, "
+          f"total_duration={summary.total_duration_seconds:.0f} s, "
+          f"total_calories={summary.total_calories} kcal")
+    print(f"  total_steps={summary.total_steps}, "
+          f"ascent={summary.total_ascent} m / descent={summary.total_descent} m")
+    if summary.average_heart_rate is not None:
+        print(f"  average_heart_rate={summary.average_heart_rate:.1f} bpm, "
+              f"max_heart_rate={summary.max_heart_rate:.0f} bpm")
+    for t in summary.activity_types:
+        print(f"  activity_type={t.activity_type}: count={t.count} "
+              f"distance={t.total_distance} m duration={t.total_duration_seconds:.0f} s")
+
+
+def run_period_mode(headers: dict[str, str]) -> int:
+    """周期模式：真实请求最近 LOOKBACK_DAYS 天 → 周期聚合离线验证。"""
+    start_time, end_time = _default_time_range(LOOKBACK_DAYS)
+    client = HTCClient(headers=headers)
+    try:
+        raw = client.query_activity_records(
+            start_time=start_time, end_time=end_time, limit=LIMIT
+        )
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {ACTIVITY_RECORD_QUERY_URL}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC API request: SUCCESS (HTTP 2xx)")
+    from src.huawei_health_mcp.parser import parse_activity_record
+
+    records = [parse_activity_record(item) for item in _extract_activity_list(raw)]
+    _print_period_summary(f"last {LOOKBACK_DAYS} days", aggregate_activity_period(records))
+    return 0
+
+
+def run_comparison_mode(headers: dict[str, str], argv: list[str]) -> int:
+    """对比模式：真实请求两个连续窗口（最近 N 天 vs 之前 N 天）。
+
+    同时验证 Known Issue：历史窗口（endTime 在过去）的真实 API 行为。
+    基线为 0 条时无法区分“该周期无训练”与“服务端不支持历史区间”，
+    输出中会提示用更大窗口重试确认。
+    """
+    try:
+        window_days = int(argv[2]) if len(argv) > 2 else LOOKBACK_DAYS
+    except ValueError:
+        print(f"Invalid window_days: {argv[2]!r} (expected an integer)")
+        return 1
+
+    client = HTCClient(headers=headers)
+    try:
+        comparison = fetch_period_comparison(
+            client, window_days=window_days, limit=MAX_LIST_LIMIT_FOR_COMPARISON
+        )
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {ACTIVITY_RECORD_QUERY_URL}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC API request: SUCCESS (both windows, HTTP 2xx)")
+    print(f"window_days={window_days} "
+          f"(baseline=[now-{2 * window_days}d, now-{window_days}d), "
+          f"current=[now-{window_days}d, now))")
+    _print_period_summary("baseline", comparison.baseline_summary)
+    _print_period_summary("current", comparison.current_summary)
+
+    b = comparison.baseline_summary
+    c = comparison.current_summary
+    print("[comparison]")
+    for name in (
+        "activity_count", "total_distance", "total_calories", "total_steps",
+        "total_duration_seconds", "average_heart_rate", "max_heart_rate",
+    ):
+        m = getattr(comparison, name)
+        pct = f"{m.percentage_change:+.1f}%" if m.percentage_change is not None else "N/A"
+        print(f"  {name}: {m.baseline} -> {m.current} (delta={m.delta}, pct={pct})")
+
+    if b.activity_count == 0:
+        print()
+        print("NOTE: baseline window returned 0 activities. This cannot distinguish")
+        print("'no training in that period' from 'server ignoring historical range'.")
+        print(f"Retry with a larger window (e.g. comparison {max(window_days * 2, 14)})")
+        print("to check whether older activities appear.")
+    if b.activity_count == 0 and c.activity_count == 0:
+        print("Both windows empty: also check auth (401/403) would have raised already.")
+    return 0
+
+
 def main() -> int:
     headers = build_headers()
     if headers is None:
         return 1
 
-    mode = sys.argv[1] if len(sys.argv) > 1 else "list"
+    argv = sys.argv
+    mode = argv[1] if len(argv) > 1 else "list"
     if mode == "detail":
         return run_detail_mode(headers)
+    if mode == "period":
+        return run_period_mode(headers)
+    if mode == "comparison":
+        return run_comparison_mode(headers, argv)
     return run_list_mode(headers)
 
 
