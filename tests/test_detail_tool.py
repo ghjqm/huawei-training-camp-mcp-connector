@@ -231,3 +231,71 @@ def test_activity_not_found_raises_value_error():
     # 错误信息含 id 与可操作提示；且没有发起详情请求
     assert TARGET_ID in str(exc_info.value)
     assert "detail" not in captured
+
+# ---------------- lookback_days：定位窗口（Phase 6.4） ----------------
+
+# 一条 60 天前的旧活动（synthetic）与一条近期活动
+NOW_MS = 1786886400000            # 2026-08-14 前后的合成“现在”
+OLD_ID = "synthetic-old-activity-60d"
+OLD_START_MS = NOW_MS - 60 * 86400 * 1000
+OLD_END_MS = OLD_START_MS + 45 * 60 * 1000
+
+WINDOW_RECORDS = [
+    {"id": OLD_ID, "activityType": 56,
+     "startTime": OLD_START_MS, "endTime": OLD_END_MS},
+    {"id": TARGET_ID, "activityType": 56,
+     "startTime": RECORD_START_MS, "endTime": RECORD_END_MS},
+]
+
+
+def _window_aware_handler(captured: dict, detail_body) -> Any:
+    """模拟真实 API 的时间过滤：只返回 startTime 落在请求窗口内的记录。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode())
+        if "detailDataType" in payload:
+            captured["detail"] = payload
+            return httpx.Response(200, json=detail_body)
+        captured["list"] = payload
+        window_start = int(payload["startTime"])
+        visible = [
+            r for r in WINDOW_RECORDS if r["startTime"] >= window_start
+        ]
+        return httpx.Response(200, json=visible)
+
+    return handler
+
+
+def test_detail_lookup_wider_window_finds_old_activity():
+    """60 天前的活动：默认 30 天找不到，扩到 90 天能找到且 payload 逐字正确。"""
+    detail_body = json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+    # 默认 30 天：旧活动不可见 → ValueError
+    captured: dict = {}
+    mock_client = _make_mock_client(_window_aware_handler(captured, detail_body))
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        with pytest.raises(ValueError):
+            get_activity_detail(activity_id=OLD_ID)
+
+    # 扩大到 90 天：能定位，detail payload 逐字使用旧活动自身毫秒时间戳
+    captured.clear()
+    mock_client = _make_mock_client(_window_aware_handler(captured, detail_body))
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        result = get_activity_detail(activity_id=OLD_ID, lookback_days=90)
+
+    assert captured["detail"]["startTime"] == str(OLD_START_MS)
+    assert captured["detail"]["endTime"] == str(OLD_END_MS)
+    assert captured["detail"]["activityType"] == "56"
+    assert result["activity_id"] == "synthetic-detail-0001"  # 解析自 detail 响应
+
+
+def test_detail_lookup_rejects_invalid_window():
+    """detail 工具同样校验窗口：非法值抛 ValueError，不发请求。"""
+    with pytest.raises(ValueError):
+        get_activity_detail(activity_id=OLD_ID, lookback_days=0)
+    with pytest.raises(ValueError):
+        get_activity_detail(activity_id=OLD_ID, lookback_days=9999)

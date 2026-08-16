@@ -95,3 +95,56 @@ def test_health_check_still_works():
     assert result["status"] == "ok"
     assert result["service"] == "huawei-training-camp-mcp"
     assert result["version"] == "0.1.0"
+
+# ---------------- lookback_days（Phase 6.4） ----------------
+
+def _capture_list_payload(tool_call) -> dict:
+    """跑一次工具调用并返回捕获到的列表请求 payload。"""
+    captured: dict = {}
+    body = {"activityRecords": [{"activityId": "act-1", "activityType": "56"}]}
+
+    def handler(request):
+        captured["payload"] = json.loads(request.content.decode())
+        return httpx.Response(200, json=body)
+
+    mock_client = HTCClient(
+        headers={}, client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with patch(
+        "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
+    ):
+        tool_call()
+    return captured["payload"]
+
+
+def test_default_lookback_30_days():
+    """不传 lookback_days 时保持旧默认：startTime ≈ 30 天前。"""
+    import time
+
+    payload = _capture_list_payload(lambda: get_recent_activities())
+    start_ms = int(payload["startTime"])
+    expected = (time.time() - 30 * 86400) * 1000
+    # 允许 60 秒时钟漂移
+    assert abs(start_ms - expected) < 60_000
+
+
+def test_custom_lookback_days_passed_to_client():
+    """lookback_days=7 正确生效：startTime ≈ 7 天前。"""
+    import time
+
+    payload = _capture_list_payload(lambda: get_recent_activities(lookback_days=7))
+    start_ms = int(payload["startTime"])
+    expected = (time.time() - 7 * 86400) * 1000
+    assert abs(start_ms - expected) < 60_000
+    # limit 行为不受影响
+    assert payload["limit"] == 5
+
+
+def test_lookback_days_validation():
+    """非法窗口（0 / 负数 / 超过 730）抛 ValueError，不发请求。"""
+    import pytest
+
+    for bad in (0, -5, 731, 100000):
+        with pytest.raises(ValueError) as exc_info:
+            get_recent_activities(lookback_days=bad)
+        assert "lookback_days" in str(exc_info.value)

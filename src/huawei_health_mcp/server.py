@@ -32,6 +32,9 @@ mcp = FastMCP("Huawei Training Camp MCP")
 # 默认查询最近多少天的训练记录
 DEFAULT_LOOKBACK_DAYS = 30
 
+# lookback_days 允许的最大值（约两年）：防止过大窗口拖慢查询或触发服务端限制
+MAX_LOOKBACK_DAYS = 730
+
 # 查询活动详情时，在最近训练列表里定位目标活动最多扫描多少条记录
 DETAIL_LOOKUP_LIMIT = 50
 
@@ -71,6 +74,19 @@ def create_htc_client(timeout: float = 30.0) -> HTCClient:
     return HTCClient(headers=build_htc_headers(), timeout=timeout)
 
 
+def _validate_lookback_days(lookback_days: int) -> int:
+    """校验查询窗口天数（Phase 6.4）。
+
+    允许 1 ~ MAX_LOOKBACK_DAYS：过小无意义，过大可能拖慢查询或触发
+    服务端限制。非法值抛 ValueError，调用方（MCP 客户端）直接看到
+    可理解的错误信息。
+    """
+    if not 1 <= lookback_days <= MAX_LOOKBACK_DAYS:
+        raise ValueError(
+            f"lookback_days 必须在 1~{MAX_LOOKBACK_DAYS} 之间，当前为 {lookback_days}"
+        )
+    return lookback_days
+
 def _default_time_range(lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> tuple[str, str]:
     """返回 (start_time, end_time) 毫秒级字符串时间戳。
 
@@ -109,6 +125,7 @@ def fetch_recent_activities(
 
     不依赖 MCP，便于直接测试。返回 ActivityRecord 列表。
     """
+    _validate_lookback_days(lookback_days)
     start_time, end_time = _default_time_range(lookback_days)
     raw = client.query_activity_records(
         start_time=start_time, end_time=end_time, limit=limit
@@ -146,6 +163,7 @@ def fetch_activity_detail(
     """
     if not activity_id:
         raise ValueError("activity_id 不能为空")
+    _validate_lookback_days(lookback_days)
 
     start_time, end_time = _default_time_range(lookback_days)
     raw_records = client.query_activity_records(
@@ -190,7 +208,9 @@ def health_check() -> dict:
 
 
 @mcp.tool()
-def get_recent_activities(limit: int = 5) -> list[dict]:
+def get_recent_activities(
+    limit: int = 5, lookback_days: int = DEFAULT_LOOKBACK_DAYS
+) -> list[dict]:
     """获取用户最近的训练记录列表。
 
     通过 HTC activityRecord:query 接口查询最近若干次运动，
@@ -198,6 +218,8 @@ def get_recent_activities(limit: int = 5) -> list[dict]:
 
     参数：
         limit: 最多返回多少条训练记录（默认 5）。
+        lookback_days: 查询窗口天数（默认 30，范围 1~730）。
+            要查更久以前的训练时主动调大，例如 90 或 365。
 
     返回：
         训练记录列表，每条包含 activity_id、起止时间、类型、距离、
@@ -210,7 +232,9 @@ def get_recent_activities(limit: int = 5) -> list[dict]:
     """
     client = create_htc_client()
     try:
-        records = fetch_recent_activities(client, limit=limit)
+        records = fetch_recent_activities(
+            client, limit=limit, lookback_days=lookback_days
+        )
     finally:
         # 无论成功还是报错，都确保底层 httpx 客户端被关闭
         client.close()
@@ -219,15 +243,19 @@ def get_recent_activities(limit: int = 5) -> list[dict]:
 
 
 @mcp.tool()
-def get_activity_detail(activity_id: str) -> dict:
+def get_activity_detail(
+    activity_id: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS
+) -> dict:
     """获取单次训练的高频采样详情（心率/速度/步频/海拔/位置/跑姿等）。
 
-    通过 activity_id 定位一次训练：先在最近 30 天训练列表里找到该活动，
-    再用其起止时间向 HTC 查询高频采样数据并解析成标准化结构。
+    通过 activity_id 定位一次训练：先在最近 lookback_days 天训练列表里
+    找到该活动，再用其起止时间向 HTC 查询高频采样数据并解析成标准化结构。
 
     参数：
         activity_id: 训练记录 id，来自 get_recent_activities 返回的
             activity_id 字段。
+        lookback_days: 定位活动时的查询窗口天数（默认 30，范围 1~730）。
+            目标训练早于 30 天时需要调大（例如 90 或 365）。
 
     返回：
         包含 activity_id、activity_type、起止时间、active_time、time_zone
@@ -249,7 +277,9 @@ def get_activity_detail(activity_id: str) -> dict:
     """
     client = create_htc_client()
     try:
-        detail = fetch_activity_detail(client, activity_id=activity_id)
+        detail = fetch_activity_detail(
+            client, activity_id=activity_id, lookback_days=lookback_days
+        )
     finally:
         # 无论成功还是报错，都确保底层 httpx 客户端被关闭
         client.close()
@@ -257,7 +287,9 @@ def get_activity_detail(activity_id: str) -> dict:
     return detail.model_dump(mode="json")
 
 @mcp.tool()
-def get_training_summary(activity_id: str) -> dict:
+def get_training_summary(
+    activity_id: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS
+) -> dict:
     """获取单次训练的统计摘要（确定性聚合，无 AI 推断）。
 
     按 activity_id 定位训练并获取高频采样后，对每个数据采集器输出：
@@ -268,6 +300,8 @@ def get_training_summary(activity_id: str) -> dict:
 
     参数：
         activity_id: 训练记录 id，来自 get_recent_activities。
+        lookback_days: 定位活动时的查询窗口天数（默认 30，范围 1~730）。
+            目标训练早于 30 天时需要调大（例如 90 或 365）。
 
     返回：
         TrainingSummary 结构：活动元信息 + collectors[] 统计数组。
@@ -283,7 +317,9 @@ def get_training_summary(activity_id: str) -> dict:
     """
     client = create_htc_client()
     try:
-        detail = fetch_activity_detail(client, activity_id=activity_id)
+        detail = fetch_activity_detail(
+            client, activity_id=activity_id, lookback_days=lookback_days
+        )
     finally:
         # 无论成功还是报错，都确保底层 httpx 客户端被关闭
         client.close()
