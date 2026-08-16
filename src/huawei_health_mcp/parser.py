@@ -147,9 +147,24 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
     """把一次华为 ActivityRecord 的原始 JSON（dict）解析成标准 ActivityRecord。
 
     任何缺失字段都填 None 或空列表，不会抛错。
+
+    统计字段位置契约（Phase 6.6 真实数据确认）：
+    真实响应把 dataSummary / performanceSummary / paceSummary 嵌套在
+    activitySummary 下（此前 fixture 假设的顶层写法作为兼容路径保留，
+    嵌套写法优先）。
     """
-    summary = _summary_map(raw.get("dataSummary"))
-    perf = raw.get("performanceSummary", {}) or {}
+    activity_summary = raw.get("activitySummary") or {}
+    if not isinstance(activity_summary, dict):
+        activity_summary = {}
+    summary = _summary_map(
+        activity_summary.get("dataSummary") or raw.get("dataSummary")
+    )
+    perf = (
+        activity_summary.get("performanceSummary")
+        or raw.get("performanceSummary")
+        or {}
+    )
+    pace_summary = activity_summary.get("paceSummary") or {}
 
     # 心率统计（不同导出可能用 averageHeartRate / avg 等命名，逐个尝试）
     hr = summary.get("com.huawei.continuous.heart_rate.statistics", {})
@@ -165,8 +180,16 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
     speed = summary.get("com.huawei.continuous.speed.statistics", {})
     avg_speed = _find_field(speed, "averageSpeed", "avgSpeed", "average", "avg")
     max_speed = _find_field(speed, "maxSpeed", "max")
-    avg_pace = (1000.0 / avg_speed) if avg_speed and avg_speed > 0 else None
-    best_pace = (1000.0 / max_speed) if max_speed and max_speed > 0 else None
+    # 配速：设备 paceSummary 的权威值优先（单位：秒/公里，Phase 6.6 真实
+    # 数据交叉验证：avgPace 351.5 ≈ 1000/avgSpeed 351.1）；缺失时由速度推导
+    auth_avg_pace = _as_float(pace_summary.get("avgPace")) if isinstance(pace_summary, dict) else None
+    auth_best_pace = _as_float(pace_summary.get("bestPace")) if isinstance(pace_summary, dict) else None
+    avg_pace = auth_avg_pace or (
+        (1000.0 / avg_speed) if avg_speed and avg_speed > 0 else None
+    )
+    best_pace = auth_best_pace or (
+        (1000.0 / max_speed) if max_speed and max_speed > 0 else None
+    )
 
     return ActivityRecord(
         activity_id=raw.get("activityId") or raw.get("id"),

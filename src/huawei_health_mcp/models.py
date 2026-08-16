@@ -152,3 +152,36 @@ class TrainingSummary(BaseModel):
     active_time: Optional[int] = None  # 单位疑问见 PROJECT_STATE Known Issues #1
     time_zone: Optional[str] = None
     collectors: list[CollectorSummary] = Field(default_factory=list)
+
+class SessionMetrics(BaseModel):
+    """单次训练的会话级指标（Phase 6.6，纯数学聚合，无业务标准）。
+
+    双源策略（source 字段标记数据来源，便于判断可信度）：
+    - device_summary：设备侧权威统计（activitySummary），优先采用
+    - samples：高频采样点聚合（与设备统计互为交叉验证）
+    - None：该指标无数据
+
+    单位契约：
+    - *_speed：米/秒；*_pace：秒/公里；distance：米；duration：秒
+    - active_time_raw 保留原始 activeTime 值（单位疑问见 PROJECT_STATE Known Issues）
+    """
+
+    activity_id: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    active_time_raw: Optional[int] = None
+
+    avg_heart_rate: Optional[float] = None
+    max_heart_rate: Optional[float] = None
+    min_heart_rate: Optional[float] = None
+    heart_rate_source: Optional[str] = None
+
+    avg_speed: Optional[float] = None
+    max_speed: Optional[float] = None
+    speed_source: Optional[str] = None
+
+    avg_pace: Optional[float] = None
+    best_pace: Optional[float] = None
+    pace_source: Optional[str] = None
+
+    distance: Optional[float] = None
+    distance_source: Optional[str] = None

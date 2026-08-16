@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from src.huawei_health_mcp.parser import parse_activity_record_file
+from src.huawei_health_mcp.parser import parse_activity_record, parse_activity_record_file
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_activity_record.json"
 
@@ -64,3 +64,49 @@ def test_sample_point_nanosecond_timestamp_conversion():
     assert ts[0] == 1786706479
     assert ts[1] == 1786706484
     assert ts[2] == 1786706490
+
+# ---------------- activitySummary 嵌套结构（Phase 6.6 真实契约） ----------------
+
+def test_record_with_nested_activity_summary():
+    """真实结构：统计嵌套在 activitySummary 下（顶层数据从未存在过）。"""
+    raw = {
+        "id": "nest-1", "activityType": 56,
+        "startTime": 1786706473000, "endTime": 1786709186000,
+        "activitySummary": {
+            "dataSummary": [
+                {"dataTypeName": "com.huawei.continuous.heart_rate.statistics",
+                 "value": [{"fieldName": "avg", "floatValue": 164.0},
+                           {"fieldName": "max", "floatValue": 188.0},
+                           {"fieldName": "min", "floatValue": 93.0}]},
+                {"dataTypeName": "com.huawei.continuous.distance.total",
+                 "value": [{"fieldName": "distance", "floatValue": 7010.0}]},
+            ],
+            "performanceSummary": {"vo2Max": 49, "recoveryTime": 1380,
+                                    "aerobicTrainingStress": 3.0},
+            "paceSummary": {"avgPace": 351.5, "bestPace": 309.0},
+        },
+    }
+    rec = parse_activity_record(raw)
+    assert rec.avg_heart_rate == 164.0
+    assert rec.max_heart_rate == 188.0
+    assert rec.min_heart_rate == 93.0
+    assert rec.distance == 7010.0
+    assert rec.vo2_max == 49.0
+    assert rec.recovery_time == 1380
+    assert rec.training_load == 3.0
+    # paceSummary 权威值优先于速度推导
+    assert rec.avg_pace == 351.5 and rec.best_pace == 309.0
+
+
+def test_top_level_summary_still_supported():
+    """兼容路径：顶层 dataSummary 写法（历史 fixture 结构）仍可解析。"""
+    raw = {
+        "activityId": "top-1",
+        "dataSummary": [
+            {"dataTypeName": "com.huawei.continuous.heart_rate.statistics",
+             "value": [{"fieldName": "avg", "floatValue": 150.0}]},
+        ],
+        "performanceSummary": {"vo2Max": 45},
+    }
+    rec = parse_activity_record(raw)
+    assert rec.avg_heart_rate == 150.0 and rec.vo2_max == 45.0

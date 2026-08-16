@@ -20,7 +20,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from .analysis import summarize_activity_detail
+from .analysis import compute_session_metrics, summarize_activity_detail
 from .client import HTCClient, HTCClientError
 from .models import ActivityDetail, ActivityRecord, TrainingSummary
 from .parser import parse_activity_detail, parse_activity_record
@@ -161,13 +161,13 @@ def _find_activity_record(records: list[dict], activity_id: str) -> dict | None:
     return None
 
 
-def fetch_activity_detail(
+def fetch_session_data(
     client: HTCClient,
     activity_id: str,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     detail_data_types: list[str] | None = None,
-) -> ActivityDetail:
-    """核心逻辑：按 activity_id 查询单次活动详情并解析为 ActivityDetail。
+) -> tuple[ActivityRecord, ActivityDetail]:
+    """核心逻辑：一次定位，同时返回 ActivityRecord（含设备权威统计）与 ActivityDetail。
 
     真实 HTC detail API 不支持按 id 直接查询（Phase 6.1 确认的请求契约是
     startTime/endTime/activityType），因此分两步：
@@ -208,7 +208,26 @@ def fetch_activity_detail(
         detail_data_types=list(detail_data_types or DEFAULT_DETAIL_DATA_TYPES),
         high_freq_details_preferred=True,
     )
-    return parse_activity_detail(raw_detail)
+    # record 同时解析：activitySummary 里的设备权威统计
+    # （心率/距离/配速/VO2max 等，Phase 6.6 起可从真实数据解析）
+    return parse_activity_record(record), parse_activity_detail(raw_detail)
+
+
+def fetch_activity_detail(
+    client: HTCClient,
+    activity_id: str,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    detail_data_types: list[str] | None = None,
+) -> ActivityDetail:
+    """按 activity_id 查询单次活动详情（fetch_session_data 的薄包装）。
+
+    兼容既有调用方：只需 ActivityDetail 时使用本函数；
+    同时需要设备权威统计（ActivityRecord）时用 fetch_session_data。
+    """
+    return fetch_session_data(
+        client, activity_id, lookback_days=lookback_days,
+        detail_data_types=detail_data_types,
+    )[1]
 
 @mcp.tool()
 def health_check() -> dict:
@@ -342,6 +361,38 @@ def get_training_summary(
         client.close()
     summary: TrainingSummary = summarize_activity_detail(detail)
     return summary.model_dump(mode="json")
+
+@mcp.tool()
+def get_session_metrics(
+    activity_id: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS
+) -> dict:
+    """获取单次训练的核心指标（纯数学聚合，无业务标准）。
+
+    返回时长、平均/最大/最小心率、平均/最大速度、平均/最佳配速、
+    距离等会话级指标。每个指标带 source 标记（device_summary=设备
+    权威统计 / samples=高频采样聚合），便于判断数据可信度。
+
+    参数：
+        activity_id: 训练记录 id，来自 get_recent_activities。
+        lookback_days: 定位活动时的查询窗口天数（默认 30，范围 1~730）。
+
+    说明：
+        - 不包含心率区间/强度分区等业务分析（标准待定）
+        - active_time_raw 为原始 activeTime 值，单位存疑（见项目文档）
+
+    错误：
+        找不到该 activity_id 时抛 ValueError；认证/HTTP 错误以
+        HTCClientError 族异常清晰报告。
+    """
+    client = create_htc_client()
+    try:
+        record, detail = fetch_session_data(
+            client, activity_id=activity_id, lookback_days=lookback_days
+        )
+    finally:
+        client.close()
+    metrics = compute_session_metrics(detail, record)
+    return metrics.model_dump(mode="json")
 
 if __name__ == "__main__":
     # 默认以 stdio（标准输入输出）方式启动，这是 MCP 的标准通信方式。

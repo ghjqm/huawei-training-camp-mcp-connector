@@ -5,7 +5,7 @@
 
 ## Current Phase
 
-Phase 6.5（工程闭环准备：limit 校验 + README 验收辅助）— **PASS**
+Phase 6.6（业务层勘探 + activitySummary 修复 + SessionMetrics）— **PASS**
 
 ## Completed
 
@@ -19,6 +19,7 @@ Phase 6.5（工程闭环准备：limit 校验 + README 验收辅助）— **PASS
 - Phase 6.3：analysis.py（summarize_activity_detail：确定性聚合）+ TrainingSummary/CollectorSummary/FieldStats 模型 + get_training_summary tool + 10 项测试；真实 JSON 离线统计验证成功（HR 93-188 avg 164.7 / speed 0-3.9 / altitude 1488.9-1500.5 / GCT 262-316ms）
 - Phase 6.4：get_recent_activities / get_activity_detail / get_training_summary 均暴露 lookback_days（默认 30，1~730 校验 _validate_lookback_days）；fetch 层复用现有时间范围参数，HTC payload contract 未变；+5 测试，真实 JSON 离线验证（90 天窗口定位成功、payload 逐字、summary 无回归）
 - Phase 6.5：get_recent_activities 的 limit 边界校验（1~MAX_LIST_LIMIT=100，MCP 入口层；内部 DETAIL_LOOKUP_LIMIT 路径不受影响）；README 全面重写（4 tools 说明 / 环境变量凭证表 / MCP 客户端配置示例 / 安装与测试指引——供用户真实客户端验收）；+2 测试
+- Phase 6.6：**修复重大契约缺口**——真实记录统计字段嵌套在 activitySummary.{dataSummary,performanceSummary,paceSummary} 下，此前 parser 只读顶层导致真实列表的 HR/距离/配速/VO2max 全部丢失为 None（Phase 5"轻量摘要"结论有误，数据一直存在）；parser 改为嵌套优先+顶层兼容双路径；新增 SessionMetrics 模型 + compute_session_metrics（双源：device_summary 权威优先/samples 聚合回退，source 字段标记来源）+ get_session_metrics tool + fetch_session_data（一次定位同时返回 record+detail，fetch_activity_detail 变薄包装签名不变）；+10 测试；真实数据全链路验证（HR 164/188/93、distance 7010m、pace 351.5/309 s/km、duration 2713s；双源交叉：设备配速 vs 采样换算差 7 s/km，采样含静止段）
 
 ## Code Status
 
@@ -28,15 +29,15 @@ src/huawei_health_mcp/
 ├── client.py     HTCClient：query_activity_records / query_activity_detail，只返回原始 JSON
 ├── models.py     ActivityRecord / SamplePoint / ActivityDetail / DetailCollector / DetailSamplePoint / TrainingSummary 族
 ├── parser.py     parse_activity_record（ms 契约）/ parse_activity_detail（顶层 ms + collector/sample ns）
-├── analysis.py   summarize_activity_detail：ActivityDetail → TrainingSummary（确定性统计，无 AI）
-└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail / get_training_summary
+├── analysis.py   summarize_activity_detail + compute_session_metrics（确定性聚合，双源，无 AI）
+└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail / get_training_summary / get_session_metrics
 scripts/test_real_htc.py   人工真实请求脚本（list / detail 两模式，凭证只从环境变量）
 tests/   8 个测试文件 + 2 个 synthetic fixtures（无真实用户数据）
 ```
 
 ## Tests
 
-`python -m pytest`（项目根，.venv）→ **68 passed**（parser 5 + client 8 + tools 9 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2）
+`python -m pytest`（项目根，.venv）→ **78 passed**（parser 7 + client 8 + tools 9 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2 + metrics 8）
 
 ## Architecture Decisions
 
@@ -85,13 +86,28 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 - get_recent_activities 的 limit 范围 1~100（MAX_LIST_LIMIT），MCP 入口校验；内部定位调用（limit=50）不受影响
 
+### activitySummary 嵌套契约（Phase 6.6，真实数据确认）
+
+- 真实记录/detail 的统计字段嵌套在 activitySummary 下：dataSummary / performanceSummary / paceSummary；顶层写法仅为历史 fixture 兼容路径
+- paceSummary.avgPace/bestPace 单位 = 秒/公里（交叉验证：351.5 ≈ 1000/2.848 avgSpeed）；paceMap/partTimeMap 键=公里（字符串），值=秒，partTimeMap 为累计时间
+- posture statistics 中 -1 为无效标记（如 avg_swing_angle=-1），不是真实生理数据
+- resting_heart_rate.statistics 未在真实样本中出现（列表+detail 均无）
+
+### SessionMetrics 双源契约（Phase 6.6）
+
+- HR/配速/距离：record 设备权威统计优先（device_summary），缺失回退采样聚合（samples）；速度：仅采样聚合；距离不积分（采样间隔不均匀）
+- 每个指标带 source 字段；缺失即 None；单位：speed=m/s、pace=s/km、distance=m、duration=s
+- active_time_raw 原样保留（单位疑问未裁决）
+
 ## Known Issues
 
 1. ActivityDetail.activeTime 单位存疑：真实值呈毫秒量级（2464000≈41min），模型注释写"秒"；parser 原样保留不转换，待证据充分再改
 2. DETAIL_LOOKUP_LIMIT=50：单次列表定位最多 50 条；查询窗口已可由 lookback_days 扩到 730 天（Phase 6.4），但单窗口内活动数超 50 时仍可能漏定位
 3. 真实 schema 基于有限真实响应（1 活动 / 6 collectors）验证，未验证字段语义不算确定事实
 4. samplePoint endTime 丢弃（真实数据 startTime==endTime，暂无损失）
-5. 真实数据观察（非 bug）：location 采样内嵌 altitude 字段恒 0，真实海拔以 altitude collector 为准；posture 部分字段（swing_angle/hang_time 等）在真实样本中恒 0
+5. 真实数据观察（非 bug）：location 采样内嵌 altitude 字段恒 0，真实海拔以 altitude collector 为准；posture 高频采样部分字段恒 0、statistics 部分 -1 为无效标记
+6. pagination：list 响应顶层为纯数组（无 page/hasNext/total 等包裹字段——已勘探证据）；limit>5 的服务端行为未验证（需真实凭证）；未实现分页（无真实证据不伪造）
+7. HR Zone / 配速区间标准未定（Manager 决策）；SessionMetrics 已提供双源基础数据，zone 计算的标准确定后可在 analysis.py 增量实现
 
 ## Risks
 
@@ -100,8 +116,8 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Next Action
 
-候选（Manager 决定）：1) 用户按 README「接入 MCP 客户端」配置真实客户端，验收四个 tool（唯一需人工环节，README 已给完整配置示例）；2) HR zones / 配速区间业务语义层——需 Manager 先定区间标准（五区/三区/%HRmax/%HRR/厂商标准），Agent 不得自行选择；3) 分页支持——无真实 API 证据，需用户持凭证配合勘探（如令 limit>5 观察响应是否含分页标记）。
+1) 【需 Manager 决策】HR Zone / 配速区间标准（五区/三区/%HRmax/%HRR/厂商）——双源数据已就绪，决策后可在 analysis.py 增量实现 zone 分布统计；2) 【需用户】真实 MCP 客户端验收五个 tool（README 有配置示例）；3) 【可自主】多活动对比/周期统计（如周跑量，纯聚合无标准）——若 Manager 无新指令可作下一 Phase。
 
 ## Last Updated
 
-2026-08-16（Phase 6.5 完成时）
+2026-08-16（Phase 6.6 完成时）
