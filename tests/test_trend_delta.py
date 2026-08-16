@@ -436,5 +436,5 @@ def test_real_records_synthetic_multiweek_delta():
     # 计数方向：older 2 条 → newer 3 条
     assert t.activity_count.baseline == 2 and t.activity_count.current == 3
     assert t.activity_count.delta == 1
-    # 环比口径与 Phase 6.8 总量守恒：两窗合计精确值不变
-    assert b.total_distance + c.total_distance == 20400.0
+    # 环比口径与总量守恒：两窗合计精确值不变（Phase 6.13 重新核对）
+    assert b.total_distance + c.total_distance == 22570.0

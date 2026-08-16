@@ -249,14 +249,14 @@ def test_real_records_aggregation():
     s = aggregate_activity_period(records)
 
     assert s.activity_count == 5
-    # 距离：1800+4350+1400+7010+5840（勘探确认全部有 distance）
-    assert s.total_distance == 20400.0
+    # 距离：7010+1400+4350+1800+8010（Phase 6.13 对刷新后 fixture 重新核对）
+    assert s.total_distance == 22570.0
     assert s.distance_activity_count == 5
-    # 分组：4×type90 + 1×type56（勘探确认）
+    # 分组：3×type90 + 2×type56（Phase 6.13 fixture 刷新后核对）
     by_type = {t.activity_type: t for t in s.activity_types}
-    assert by_type[90].count == 4
-    assert by_type[56].count == 1
-    assert by_type[56].total_distance == 7010.0
+    assert by_type[90].count == 3
+    assert by_type[56].count == 2
+    assert by_type[56].total_distance == 15020.0
     # HR：至少 type56 有（avg 164.0 / max 188.0，Phase 6.6 已确认）
     assert s.hr_activity_count >= 1
     assert s.max_heart_rate >= 188.0
@@ -321,14 +321,153 @@ def test_new_fields_partial_availability():
 
 
 def test_real_records_new_fields_exact():
-    """真实 fixture（data_temp 5 条）：新字段聚合值与勘探核对值精确一致。"""
+    """真实 fixture（data_temp 5 条）：新字段聚合值与勘探核对值精确一致。
+
+    Phase 6.13：fixture 在 6.12 真实验收后刷新，精确值随之重新核对。
+    """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在")
     raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
     s = aggregate_activity_period([parse_activity_record(r) for r in raw])
-    assert s.total_calories == 917.0
-    assert s.total_ascent == 70.6 and s.total_descent == 65.7
-    assert s.total_steps == 26769
+    assert s.total_calories == 1154.0
+    assert s.total_ascent == 70.5 and s.total_descent == 70.7
+    assert s.total_steps == 25712
     assert s.calories_activity_count == 5
     assert s.ascent_activity_count == 5
     assert s.steps_activity_count == 5
+
+
+# ---------------- Phase 6.13：活跃时间 / 周期配速 ----------------
+
+def test_active_time_totals_sum():
+    """total_active_time_seconds = Σ(active_time_ms/1000)（唯一单位换算点）。"""
+    recs = [
+        _rec("a", _t(6), _t(7), 56, 5000.0),
+        _rec("b", _t(9), _t(9, 30), 56, 3000.0),
+    ]
+    recs[0].active_time_ms = 3600000  # 3600 s
+    recs[1].active_time_ms = 1800000  # 1800 s
+    s = aggregate_activity_period(recs)
+    assert s.total_active_time_seconds == 5400.0
+    assert s.active_time_activity_count == 2
+
+
+def test_active_time_all_missing_is_none():
+    """activeTime 全缺 → total_active_time_seconds=None（不伪造 0），计数 0。"""
+    s = aggregate_activity_period([_rec("a", _t(6), _t(7), 56, 100.0)])
+    assert s.total_active_time_seconds is None
+    assert s.active_time_activity_count == 0
+    assert s.average_pace_seconds_per_km is None
+    assert s.pace_activity_count == 0
+
+
+def test_average_pace_dual_value_subset():
+    """周期配速 = ΣactiveTime_s / Σdistance_km（双值子集，比率聚合）。
+
+    (1800+1200)/(5+3)=375 s/km，刻意区别于算术平均
+    (360+400)/2=380——配速是比率，算术平均口径错误（契约禁止）。
+    """
+    recs = [
+        _rec("a", _t(6), _t(7), 56, 5000.0),   # 360 s/km
+        _rec("b", _t(9), _t(10), 56, 3000.0),  # 400 s/km
+        _rec("c", _t(12), _t(13), 56, 8000.0), # 无 activeTime → 剔除
+    ]
+    recs[0].active_time_ms = 1800000
+    recs[1].active_time_ms = 1200000
+    s = aggregate_activity_period(recs)
+    assert s.average_pace_seconds_per_km == pytest.approx(375.0)
+    assert s.pace_activity_count == 2
+    # 无 activeTime 的活动仍计入距离聚合（互不污染）
+    assert s.total_distance == 16000.0
+    assert s.distance_activity_count == 3
+
+
+def test_average_pace_single_side_missing_excluded():
+    """单侧缺失：只有距离或只有 activeTime 的活动都剔除出配速子集。"""
+    recs = [
+        _rec("a", _t(6), _t(7), 56, 5000.0),  # 只有距离
+        _rec("b", _t(9), _t(10), 56),          # 只有 activeTime
+    ]
+    recs[1].active_time_ms = 1200000
+    s = aggregate_activity_period(recs)
+    assert s.total_active_time_seconds == 1200.0
+    assert s.active_time_activity_count == 1
+    assert s.average_pace_seconds_per_km is None  # 无双值活动
+    assert s.pace_activity_count == 0
+
+
+def test_active_pace_mixed_input_stable():
+    """混合输入（部分无 distance / 部分无 activeTime）：各聚合互不污染。"""
+    recs = [
+        _rec("a", _t(6), _t(7), 56, 5000.0),    # 双值：(1800 s, 5 km)
+        _rec("b", _t(8), _t(9), 56),             # 只有 activeTime
+        _rec("c", _t(10), _t(11), 56, 3000.0),   # 只有距离
+        _rec("d", _t(12), _t(13), 56, 2000.0),   # 双值：(900 s, 2 km)
+    ]
+    recs[0].active_time_ms = 1800000
+    recs[1].active_time_ms = 600000
+    recs[3].active_time_ms = 900000
+    s = aggregate_activity_period(recs)
+    # 活跃时间：全部有 activeTime 的活动求和（1800+600+900）
+    assert s.total_active_time_seconds == 3300.0
+    assert s.active_time_activity_count == 3
+    # 配速：只在双值子集 (1800+900)/(5+2) = 2700/7
+    assert s.average_pace_seconds_per_km == pytest.approx(2700.0 / 7.0)
+    assert s.pace_activity_count == 2
+    # 既有语义零改动
+    assert s.total_distance == 10000.0
+    assert s.distance_activity_count == 3
+    assert s.activity_count == 4
+
+
+def test_active_pace_per_type_symmetric():
+    """per-type 分组与整体对称：同样的双字段与 None 语义。"""
+    recs = [
+        _rec("a", _t(6), _t(7), 56, 5000.0),
+        _rec("b", _t(9), _t(10), 56, 3000.0),
+        _rec("c", _t(12), _t(13), 90, 8000.0),
+        _rec("d", _t(15), _t(16), 90),  # 无距离无 activeTime
+    ]
+    recs[0].active_time_ms = 1800000
+    recs[1].active_time_ms = 1200000
+    recs[2].active_time_ms = 2400000
+    s = aggregate_activity_period(recs)
+    by_type = {t.activity_type: t for t in s.activity_types}
+    assert by_type[56].total_active_time_seconds == 3000.0
+    assert by_type[56].active_time_activity_count == 2
+    assert by_type[56].average_pace_seconds_per_km == pytest.approx(3000.0 / 8.0)
+    assert by_type[56].pace_activity_count == 2
+    assert by_type[90].total_active_time_seconds == 2400.0
+    assert by_type[90].active_time_activity_count == 1
+    assert by_type[90].average_pace_seconds_per_km == pytest.approx(2400.0 / 8.0)
+    assert by_type[90].pace_activity_count == 1
+    # 整体 = 各类型活跃时间之和；整体配速 = Σs/Σkm（5400/16）
+    assert s.total_active_time_seconds == 5400.0
+    assert s.average_pace_seconds_per_km == pytest.approx(5400.0 / 16.0)
+
+
+def test_real_records_active_time_pace_identity():
+    """证据 B 永久回归（Phase 6.13）：设备 avgPace 恒等式 activeTime_s/distance_km。
+
+    5 条真实记录逐条验证（容差 0.01 s/km），如 8010m/2859s=356.93 vs
+    设备 356.92883——证明设备配速口径 = 纯运动时间（activeTime, ms）/距离，
+    而非 elapsed time。fixture 缺失时 skip（data_temp 为本地隐私数据）。
+    """
+    if not REAL_RECORDS.exists():
+        pytest.skip("real fixture 不存在")
+    raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
+    records = [parse_activity_record(r) for r in raw]
+    assert len(records) == 5
+    for r in records:
+        assert r.active_time_ms is not None  # 5/5 提供顶层 activeTime
+        assert r.distance is not None
+        derived_pace = (r.active_time_ms / 1000.0) / (r.distance / 1000.0)
+        assert derived_pace == pytest.approx(r.avg_pace, abs=0.01)
+    # 周期口径：ΣactiveTime_s / Σdistance_km（设备口径的聚合推广）
+    s = aggregate_activity_period(records)
+    total_s = sum(r.active_time_ms for r in records) / 1000.0
+    total_km = sum(r.distance for r in records) / 1000.0
+    assert s.total_active_time_seconds == pytest.approx(total_s)
+    assert s.average_pace_seconds_per_km == pytest.approx(total_s / total_km)
+    assert s.active_time_activity_count == 5
+    assert s.pace_activity_count == 5

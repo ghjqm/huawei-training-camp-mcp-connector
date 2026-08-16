@@ -20,7 +20,8 @@ def _duration_of(record: ActivityRecord) -> float | None:
     """单条记录的历时（秒）：end_time - start_time。
 
     任一时间缺失返回 None（不计入聚合）。
-    语义注意：总历时含间歇，非纯运动时间（activeTime 单位存疑未决）。
+    语义注意：总历时含间歇，非纯运动时间（纯运动时长由 active_time_ms
+    聚合，Phase 6.13 已确认 activeTime 单位为毫秒）。
     """
     if record.start_time is None or record.end_time is None:
         return None
@@ -33,7 +34,10 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
     - 空列表合法：返回全零/全 None 的空 summary
     - 距离/HR 缺失的活动不计入对应聚合，*_activity_count 标记有效样本数
     - activityType 原样分组（int），不命名语义
-    - 不提供周期平均配速（纯运动总时长缺失，见 models 契约注释）
+    - Phase 6.13：total_active_time_seconds = Σ(active_time_ms/1000)（唯一
+      单位换算点），全缺 → None；average_pace_seconds_per_km =
+      ΣactiveTime(秒) / Σdistance(公里)，只在双值活动子集上计算（设备
+      口径；配速是比率，禁止对 per-activity 配速做算术平均）
     """
     distances: list[float] = []
     calories_list: list[float] = []
@@ -41,6 +45,9 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
     descents: list[float] = []
     steps_list: list[int] = []
     durations: list[float] = []
+    active_ms_values: list[int] = []
+    pace_active_seconds: list[float] = []  # 与 pace_distance_km 一一对应（双值活动）
+    pace_distance_km: list[float] = []
     avg_hrs: list[float] = []
     max_hrs: list[float] = []
     starts: list = []
@@ -63,6 +70,11 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
             descents.append(float(record.descent))
         if record.steps is not None:
             steps_list.append(int(record.steps))
+        if record.active_time_ms is not None:
+            active_ms_values.append(int(record.active_time_ms))
+        if record.active_time_ms is not None and record.distance is not None:
+            pace_active_seconds.append(record.active_time_ms / 1000.0)
+            pace_distance_km.append(record.distance / 1000.0)
 
         duration = _duration_of(record)
         if duration is not None:
@@ -76,14 +88,27 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
         if record.activity_type is not None:
             bucket = type_buckets.setdefault(
                 record.activity_type,
-                {"count": 0, "distances": [], "durations": []},
+                {
+                    "count": 0,
+                    "distances": [],
+                    "durations": [],
+                    "active_ms": [],
+                    "pace_active_seconds": [],
+                    "pace_distance_km": [],
+                },
             )
             bucket["count"] += 1
             if record.distance is not None:
                 bucket["distances"].append(float(record.distance))
             if duration is not None:
                 bucket["durations"].append(duration)
+            if record.active_time_ms is not None:
+                bucket["active_ms"].append(int(record.active_time_ms))
+            if record.active_time_ms is not None and record.distance is not None:
+                bucket["pace_active_seconds"].append(record.active_time_ms / 1000.0)
+                bucket["pace_distance_km"].append(record.distance / 1000.0)
 
+    pace_total_km = sum(pace_distance_km)
     activity_types = [
         ActivityTypeSummary(
             activity_type=activity_type,
@@ -92,6 +117,18 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
                 sum(bucket["distances"]) if bucket["distances"] else None
             ),
             total_duration_seconds=sum(bucket["durations"]),
+            total_active_time_seconds=(
+                sum(bucket["active_ms"]) / 1000.0
+                if bucket["active_ms"]
+                else None
+            ),
+            active_time_activity_count=len(bucket["active_ms"]),
+            average_pace_seconds_per_km=(
+                sum(bucket["pace_active_seconds"]) / sum(bucket["pace_distance_km"])
+                if bucket["pace_active_seconds"] and sum(bucket["pace_distance_km"]) > 0
+                else None
+            ),
+            pace_activity_count=len(bucket["pace_active_seconds"]),
         )
         for activity_type, bucket in sorted(type_buckets.items())
     ]
@@ -111,6 +148,16 @@ def aggregate_activity_period(records: list[ActivityRecord]) -> TrainingPeriodSu
         steps_activity_count=len(steps_list),
         total_duration_seconds=sum(durations),
         duration_activity_count=len(durations),
+        total_active_time_seconds=(
+            sum(active_ms_values) / 1000.0 if active_ms_values else None
+        ),
+        active_time_activity_count=len(active_ms_values),
+        average_pace_seconds_per_km=(
+            sum(pace_active_seconds) / pace_total_km
+            if pace_active_seconds and pace_total_km > 0
+            else None
+        ),
+        pace_activity_count=len(pace_active_seconds),
         average_distance=(
             sum(distances) / len(distances) if distances else None
         ),

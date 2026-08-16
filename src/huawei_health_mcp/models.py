@@ -3,8 +3,8 @@
 这里只保留“训练分析”需要的标准化字段，不暴露华为原始 JSON 里的所有字段。
 所有时间字段都使用 Python datetime（纳秒时间戳已由 parser 转换好）。
 
-单位说明（需结合你的真实数据再确认）：
-- active_time: 秒
+单位说明（activeTime 单位已由 Phase 6.13 真实数据确认）：
+- active_time / active_time_ms: 毫秒（原样保留，不换算）
 - distance: 米
 - *heart_rate: bpm
 - avg_pace / best_pace: 秒/公里
@@ -39,7 +39,8 @@ class ActivityRecord(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     activity_type: Optional[int] = None  # HTC 实际返回整数（如 90、56），已由真实响应确认
-    active_time: Optional[int] = None  # 秒
+    active_time: Optional[int] = None  # 毫秒（Phase 6.13 真实数据确认；原样保留不换算）
+    active_time_ms: Optional[int] = None  # 毫秒（记录级顶层 activeTime，Phase 6.13 新增的显式单位字段，与 active_time 同源同值）
     distance: Optional[float] = None   # 米
     calories: Optional[float] = None   # kcal（activitySummary calories_total，设备口径原值）
     ascent: Optional[float] = None     # 米（累计爬升，altitude.statistics ascent_total）
@@ -112,7 +113,7 @@ class ActivityDetail(BaseModel):
     activity_type: Optional[int] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
-    active_time: Optional[int] = None  # 秒
+    active_time: Optional[int] = None  # 毫秒（Phase 6.13 真实数据确认；原样保留不换算）
     time_zone: Optional[str] = None
     details: list[DetailCollector] = Field(default_factory=list)
 
@@ -153,7 +154,7 @@ class TrainingSummary(BaseModel):
     activity_type: Optional[int] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
-    active_time: Optional[int] = None  # 单位疑问见 PROJECT_STATE Known Issues #1
+    active_time: Optional[int] = None  # 毫秒（Phase 6.13 真实数据确认，原样保留）
     time_zone: Optional[str] = None
     collectors: list[CollectorSummary] = Field(default_factory=list)
 
@@ -167,7 +168,7 @@ class SessionMetrics(BaseModel):
 
     单位契约：
     - *_speed：米/秒；*_pace：秒/公里；distance：米；duration：秒
-    - active_time_raw 保留原始 activeTime 值（单位疑问见 PROJECT_STATE Known Issues）
+    - active_time_raw 保留原始 activeTime 值（毫秒，Phase 6.13 真实数据确认）
     """
 
     activity_id: Optional[str] = None
@@ -195,12 +196,18 @@ class ActivityTypeSummary(BaseModel):
 
     activity_type 只保留 HTC 原始值（int，如 56/90），不自行命名语义——
     类型→运动名的映射未经真实证据确认，属 Manager 决策。
+    Phase 6.13 起与 TrainingPeriodSummary 对称提供活跃时间与周期配速字段
+    （契约见 TrainingPeriodSummary 注释）。
     """
 
     activity_type: int
     count: int = 0
     total_distance: Optional[float] = None  # 米；None=该类型无任何距离数据
     total_duration_seconds: float = 0.0
+    total_active_time_seconds: Optional[float] = None  # 秒（Σ active_time_ms/1000；全缺→None）
+    active_time_activity_count: int = 0
+    average_pace_seconds_per_km: Optional[float] = None  # ΣactiveTime_s/Σdistance_km（双值活动子集）
+    pace_activity_count: int = 0
 
 
 class TrainingPeriodSummary(BaseModel):
@@ -209,13 +216,19 @@ class TrainingPeriodSummary(BaseModel):
     单位契约：distance=米，duration=秒。
     语义契约：
     - duration = 每条记录 end_time - start_time 的总历时（含间歇），
-      非纯运动时间（activeTime 单位存疑，见 PROJECT_STATE Known Issues）
+      非纯运动时间（纯运动时长见 total_active_time_seconds）
     - distance 只聚合设备权威 summary 值（不积分采样）；缺失活动不计入，
       由 distance_activity_count 标记有效样本数
     - HR 只聚合设备 summary 的 per-activity avg/max；hr_activity_count 标记
       有效样本数；类型与来源不混（无 samples 来源混入）
-    - 不提供周期平均配速：纯运动总时长缺失（activeTime 单位未决），
-      elapsed-based 会与设备 avgPace 语义不一致（待 Manager 决策）
+    - Phase 6.13 活跃时间契约：activeTime 单位 = 毫秒（真实数据确认）；
+      total_active_time_seconds = Σ(active_time_ms/1000)（唯一单位换算点），
+      仅统计有 active_time_ms 的活动，全缺 → None（不伪造 0）
+    - Phase 6.13 周期配速契约：average_pace_seconds_per_km =
+      ΣactiveTime(秒) / Σdistance(公里)，只在 distance 与 active_time_ms
+      双值活动子集上计算（设备口径，证据 B：设备 avgPace 恒等
+      activeTime_s/distance_km）；配速是比率，禁止对 per-activity
+      配速做算术平均
     """
 
     activity_count: int = 0
@@ -233,6 +246,10 @@ class TrainingPeriodSummary(BaseModel):
     steps_activity_count: int = 0
     total_duration_seconds: float = 0.0
     duration_activity_count: int = 0
+    total_active_time_seconds: Optional[float] = None  # 秒（Σ active_time_ms/1000；全缺→None）
+    active_time_activity_count: int = 0
+    average_pace_seconds_per_km: Optional[float] = None  # 秒/公里（ΣactiveTime_s/Σdistance_km，双值活动子集）
+    pace_activity_count: int = 0
 
     average_distance: Optional[float] = None
     average_duration_seconds: Optional[float] = None

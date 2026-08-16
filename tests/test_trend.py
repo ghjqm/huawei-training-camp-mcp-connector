@@ -357,13 +357,13 @@ def test_real_records_parse_and_window_assignment():
     # 锚点 = 最晚 end + 1s → 全部记录落最近窗口（数据来自 7 天列表查询）
     assert old.summary.activity_count == 0
     assert new.summary.activity_count == 5
-    # 与 Phase 6.8 已知精确总量交叉验证
-    assert new.summary.total_distance == 20400.0
-    assert new.summary.total_calories == 917.0
-    assert new.summary.total_ascent == 70.6 and new.summary.total_descent == 65.7
-    assert new.summary.total_steps == 26769
+    # 与 Phase 6.13 重新核对的精确总量交叉验证
+    assert new.summary.total_distance == 22570.0
+    assert new.summary.total_calories == 1154.0
+    assert new.summary.total_ascent == 70.5 and new.summary.total_descent == 70.7
+    assert new.summary.total_steps == 25712
     by_type = {t.activity_type: t.count for t in new.summary.activity_types}
-    assert by_type == {90: 4, 56: 1}
+    assert by_type == {90: 3, 56: 2}
 
 
 def test_real_records_split_across_weeks_synthetic():
@@ -387,7 +387,7 @@ def test_real_records_split_across_weeks_synthetic():
     old, new = trend.weeks
     assert old.summary.activity_count == 2
     assert new.summary.activity_count == 3
-    # 两窗合计 = Phase 6.8 精确总量
-    assert old.summary.total_distance + new.summary.total_distance == 20400.0
-    assert old.summary.total_calories + new.summary.total_calories == 917.0
-    assert old.summary.total_steps + new.summary.total_steps == 26769
+    # 两窗合计 = Phase 6.13 重新核对的精确总量
+    assert old.summary.total_distance + new.summary.total_distance == 22570.0
+    assert old.summary.total_calories + new.summary.total_calories == 1154.0
+    assert old.summary.total_steps + new.summary.total_steps == 25712

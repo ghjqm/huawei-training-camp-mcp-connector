@@ -291,6 +291,26 @@ def run_list_mode(headers: dict[str, str]) -> int:
     return 0 if parsed_ok == len(records) else 1
 
 
+def _fmt_local(dt: datetime) -> str:
+    """窗口边界展示格式：UTC 锚点切分的边界转本地时区（只含时间，无位置）。"""
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _fmt_delta(v: float | int | None) -> str:
+    """delta 展示格式（Phase 6.13 浮点噪声修复）。
+
+    - None → N/A（沿用 pct 的缺失语义）
+    - int 原样输出（计数类 delta 保持整数）
+    - float 固定两位小数（消除减法产生的长尾噪声，如
+      -0.19999999999998863 → -0.20；带符号风格与 pct 的 +.1f% 一致）
+    """
+    if v is None:
+        return "N/A"
+    if isinstance(v, int):
+        return str(v)
+    return f"{v:+.2f}"
+
+
 def _print_period_summary(label: str, summary) -> None:
     """输出周期聚合的安全摘要（只含统计数字，无凭证/位置数据）。"""
     print(f"[{label}]")
@@ -302,6 +322,17 @@ def _print_period_summary(label: str, summary) -> None:
           f"total_calories={summary.total_calories} kcal")
     print(f"  total_steps={summary.total_steps}, "
           f"ascent={summary.total_ascent} m / descent={summary.total_descent} m")
+    # Phase 6.13：周期活跃时间（毫秒→秒唯一换算点）与周期配速（设备口径）
+    active_s = summary.total_active_time_seconds
+    print(f"  total_active_time="
+          f"{active_s:.0f} s (valid: {summary.active_time_activity_count})"
+          if active_s is not None
+          else "  total_active_time=N/A (no activeTime data)")
+    pace = summary.average_pace_seconds_per_km
+    print(f"  average_pace="
+          f"{pace:.1f} s/km (valid: {summary.pace_activity_count})"
+          if pace is not None
+          else "  average_pace=N/A (no distance+activeTime pair)")
     if summary.average_heart_rate is not None:
         print(f"  average_heart_rate={summary.average_heart_rate:.1f} bpm, "
               f"max_heart_rate={summary.max_heart_rate:.0f} bpm")
@@ -400,11 +431,6 @@ def _parse_weeks(argv: list[str]) -> int | None:
         return None
 
 
-def _fmt_local(dt: datetime) -> str:
-    """窗口边界展示格式：UTC 锚点切分的边界转本地时区（只含时间，无位置）。"""
-    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
-
-
 def run_trend_mode(headers: dict[str, str], argv: list[str]) -> int:
     """趋势模式：最近 N 个连续 7 天滚动周窗口的训练量趋势。
 
@@ -494,7 +520,8 @@ def run_trend_delta_mode(headers: dict[str, str], argv: list[str]) -> int:
         ):
             m = getattr(t, name)
             pct = f"{m.percentage_change:+.1f}%" if m.percentage_change is not None else "N/A"
-            print(f"  {name}: {m.baseline} -> {m.current} (delta={m.delta}, pct={pct})")
+            print(f"  {name}: {m.baseline} -> {m.current} "
+                  f"(delta={_fmt_delta(m.delta)}, pct={pct})")
     return 0
 
 

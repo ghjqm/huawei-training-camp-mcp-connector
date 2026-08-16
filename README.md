@@ -16,10 +16,10 @@ Huawei Training Camp / Huawei Health 网页端的运动训练数据。
 | `get_activity_detail(activity_id, lookback_days=30)` | 单次训练高频采样详情（心率 / 速度 / 步频 / 海拔 / 位置 / 跑姿，通用 field-value 结构） |
 | `get_training_summary(activity_id, lookback_days=30)` | 单次训练确定性统计摘要（每采集器样本数 / 时间范围 / 各字段 min-max-avg-first-last），无 AI 推断 |
 | `get_session_metrics(activity_id, lookback_days=30)` | 单次训练核心指标（时长 / 心率 / 速度 / 配速 / 距离，带 device_summary/samples 来源标记） |
-| `get_training_period_summary(lookback_days=7, limit=100)` | 一段周期内多次训练聚合（次数 / 总距离 / 总历时 / 平均与最大单次 / 心率 / 卡路里 / 累计爬升下降 / 步数 / 按 activityType 分组），类型值原样保留不命名语义 |
+| `get_training_period_summary(lookback_days=7, limit=100)` | 一段周期内多次训练聚合（次数 / 总距离 / 总历时 / 平均与最大单次 / 心率 / 卡路里 / 累计爬升下降 / 步数 / 按 activityType 分组），类型值原样保留不命名语义；另含总纯运动时长（activeTime 毫秒→秒，全缺为 None）与周期平均配速（Σ纯运动秒/Σ公里，仅统计距离与纯运动时长双值活动，设备口径） |
 | `get_training_period_comparison(window_days=7, limit=100)` | 两个连续周期对比：最近 N 天 vs 之前 N 天（每指标 baseline / current / delta / percentage_change；缺失≠0，baseline 为 0 或缺失时 pct 为 None 不除零） |
-| `get_training_weekly_trend(weeks=4, limit=100)` | 最近 N 个连续周窗口的训练量趋势（滚动 7 天窗口、同一时间锚点、不重叠；每周完整周期聚合：次数/距离/历时/卡路里/步数/爬降/心率/类型分组） |
-| `get_training_weekly_trend_delta(weeks=4, limit=100)` | 相邻周环比（older → newer，最多 weeks-1 对；复用周期对比的 delta/percentage_change 数学契约；weeks=1 返回空数组） |
+| `get_training_weekly_trend(weeks=4, limit=100)` | 最近 N 个连续周窗口的训练量趋势（滚动 7 天窗口、同一时间锚点、不重叠；每周完整周期聚合：次数/距离/历时/卡路里/步数/爬降/心率/类型分组，含总纯运动时长与周期配速） |
+| `get_training_weekly_trend_delta(weeks=4, limit=100)` | 相邻周环比（older → newer，最多 weeks-1 对；复用周期对比的 delta/percentage_change 数学契约；weeks=1 返回空数组；环比指标清单暂不含周期配速，周聚合新字段见 get_training_weekly_trend） |
 
 - `lookback_days`：查询窗口天数，默认 30，范围 1~730；查更早的训练时调大。
 - `weeks`（周趋势）：周窗口数，默认 4，范围 1~104（总跨度 ≤728 天 ≤730 上限）；

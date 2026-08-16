@@ -52,3 +52,18 @@ def test_fmt_local_renders_local_time_format():
     # 展示格式固定（YYYY-MM-DD HH:MM），且确实转成了本地时区
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", rendered)
     assert rendered == dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+# ---------------- Phase 6.13：trend-delta delta 浮点噪声修复 ----------------
+
+def test_fmt_delta_eliminates_float_noise():
+    # 减法产生的长尾浮点噪声 → 固定两位小数（带符号，与 pct 的 +.1f% 风格一致）
+    assert script._fmt_delta(-0.19999999999998863) == "-0.20"
+    assert script._fmt_delta(50.900000000000006) == "+50.90"
+
+
+def test_fmt_delta_none_and_int():
+    # None → N/A（缺失≠0）；int 原样输出（计数类 delta 保持整数）
+    assert script._fmt_delta(None) == "N/A"
+    assert script._fmt_delta(5) == "5"
+    assert script._fmt_delta(-3) == "-3"

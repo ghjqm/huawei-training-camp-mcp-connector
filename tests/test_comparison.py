@@ -443,17 +443,17 @@ def test_real_records_synthetic_period_comparison():
         (c_dist - b_dist) / b_dist * 100
     )
 
-    # 计数与单位不变量：整体合计与 Phase 6.8 精确断言一致
+    # 计数与单位不变量：整体合计与 Phase 6.13 重新核对的精确断言一致
     assert c.activity_count.baseline == 2 and c.activity_count.current == 3
     assert c.activity_count.delta == 1
-    assert b.total_calories + cur.total_calories == 917.0
-    assert b.total_steps + cur.total_steps == 26769
+    assert b.total_calories + cur.total_calories == 1154.0
+    assert b.total_steps + cur.total_steps == 25712
     assert c.total_calories.delta == pytest.approx(
         cur.total_calories - b.total_calories
     )
-    # activity_types 分组随内嵌 summary 保真（整体 4x90 + 1x56）
+    # activity_types 分组随内嵌 summary 保真（整体 3x90 + 2x56）
     total_90 = (
         next(t.count for t in b.activity_types if t.activity_type == 90)
         + next(t.count for t in cur.activity_types if t.activity_type == 90)
     )
-    assert total_90 == 4
+    assert total_90 == 3

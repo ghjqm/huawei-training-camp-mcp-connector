@@ -134,3 +134,36 @@ def test_record_calories_ascent_descent_steps_mapping():
     assert rec.ascent == 20.3 and rec.descent == 22.0
     assert rec.steps == 6621 and isinstance(rec.steps, int)
     # max/min 等其他 fieldName 不进入模型（最小字段集）
+
+
+# ---------------- active_time_ms（Phase 6.13：activeTime 毫秒契约） ----------------
+
+def test_record_active_time_ms_parsed_from_top_level():
+    """记录级顶层 activeTime → active_time_ms（int 毫秒，原样保留不换算）。"""
+    raw = {
+        "id": "at-1", "activityType": 56,
+        "startTime": 1786706473000, "endTime": 1786709186000,
+        "activeTime": 2464000,
+    }
+    rec = parse_activity_record(raw)
+    assert rec.active_time_ms == 2464000
+    assert isinstance(rec.active_time_ms, int)
+    # 既有字段同源同值（active_time 保留旧名，单位注释已修正为毫秒）
+    assert rec.active_time == 2464000
+
+
+def test_record_active_time_ms_missing_is_none():
+    """activeTime 缺失 → active_time_ms=None（不伪造 0）。"""
+    raw = {
+        "id": "at-2", "activityType": 56,
+        "startTime": 1786706473000, "endTime": 1786709186000,
+    }
+    rec = parse_activity_record(raw)
+    assert rec.active_time_ms is None
+    assert rec.active_time is None
+
+
+def test_record_active_time_ms_type_conversion():
+    """数字字符串 / float 输入经 _as_int 容错转为 int（真实契约为 int 毫秒）。"""
+    assert parse_activity_record({"activeTime": "2464000"}).active_time_ms == 2464000
+    assert parse_activity_record({"activeTime": 2464000.0}).active_time_ms == 2464000

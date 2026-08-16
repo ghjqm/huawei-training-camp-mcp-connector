@@ -206,6 +206,9 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
         end_time=_ms_to_datetime(raw.get("endTime")),      # 契约：记录级毫秒
         activity_type=raw.get("activityType") or raw.get("type"),
         active_time=_as_int(raw.get("activeTime")),
+        # Phase 6.13：记录级顶层 activeTime = 毫秒（真实数据确认），
+        # 与 active_time 同源同值，作为显式单位命名的规范字段
+        active_time_ms=_as_int(raw.get("activeTime")),
         distance=_as_float(distance),
         calories=_as_float(calories),
         ascent=_as_float(ascent),
