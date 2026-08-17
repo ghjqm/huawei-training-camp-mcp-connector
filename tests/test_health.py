@@ -185,7 +185,7 @@ def test_sleep_get_request_contract():
 
 
 def test_health_record_stats_payload_contract():
-    """HRV 统计：字符串 startDay/endDay + fieldNames（证据契约）。"""
+    """HRV 统计：字符串 startDay/endDay + fieldNames + 必填公共字段。"""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -197,22 +197,26 @@ def test_health_record_stats_payload_contract():
 
     client = _make_mock_client(handler)
     client.query_health_record_stats(
-        field_names=["avgHrv"], start_day="20260811", end_day="20260817"
+        field_names=["avgHrv"], start_day="20260811", end_day="20260817",
+        timezone="+0800",
     )
     client.close()
 
     assert captured["url"] == HEALTH_RECORD_STATS_URL
     payload = captured["payload"]
-    # 字符串写法契约（与 sampleSet 端点的数字写法区分）
+    # 源码 payload 契约（2026-08-17 补充勘探；groupOption 缺失即 400）
     for req in (payload["reqs"][0], payload["groupReqs"][0]):
         assert req["startDay"] == "20260811"
         assert req["endDay"] == "20260817"
         assert req["fieldNames"] == ["avgHrv"]
         assert req["dataType"] == "com.huawei.health.record.sleep"
+        assert req["groupOption"] == "day"
+        assert req["strategy"] == ["MAX", "MIN", "AVG", "SUM"]
+        assert req["timeZone"] == "+0800"
 
 
 def test_sample_set_stats_payload_contract():
-    """静息心率统计：数字 startDay/endDay + 不带 fieldNames（证据契约）。"""
+    """静息心率统计：数字 startDay/endDay + 无 fieldNames + 必填公共字段。"""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -223,17 +227,22 @@ def test_sample_set_stats_payload_contract():
         return httpx.Response(200, json=REAL_RHR_RESPONSE)
 
     client = _make_mock_client(handler)
-    client.query_sample_set_stats(start_day=20260721, end_day=20260817)
+    client.query_sample_set_stats(
+        start_day=20260721, end_day=20260817, timezone="+0800"
+    )
     client.close()
 
     assert captured["url"] == SAMPLE_SET_STATS_URL
     payload = captured["payload"]
-    # 数字写法契约（与 healthRecords 端点的字符串写法区分）
+    # 源码 payload 契约（数字写法 + groupOption/strategy/timeZone 必填）
     for req in (payload["reqs"][0], payload["groupReqs"][0]):
         assert req["startDay"] == 20260721
         assert req["endDay"] == 20260817
         assert "fieldNames" not in req
         assert req["dataType"] == "com.huawei.instantaneous.resting_heart_rate"
+        assert req["groupOption"] == "day"
+        assert req["strategy"] == ["MAX", "MIN", "AVG", "SUM"]
+        assert req["timeZone"] == "+0800"
 
 
 def test_recovery_endpoints_http_error_propagates():
@@ -249,9 +258,9 @@ def test_recovery_endpoints_http_error_propagates():
         client.query_sleep_records(1, 2)
     assert exc_info.value.status_code == 401
     with pytest.raises(HTCHTTPError):
-        client.query_health_record_stats(["avgHrv"], "20260811", "20260817")
+        client.query_health_record_stats(["avgHrv"], "20260811", "20260817", "+0800")
     with pytest.raises(HTCHTTPError):
-        client.query_sample_set_stats(20260721, 20260817)
+        client.query_sample_set_stats(20260721, 20260817, "+0800")
     client.close()
 
 

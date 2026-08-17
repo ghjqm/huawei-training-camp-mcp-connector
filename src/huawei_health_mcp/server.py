@@ -423,6 +423,11 @@ def _local_midnight() -> datetime:
     )
 
 
+def _local_tz_offset() -> str:
+    """本地时区 → "+HHMM" 格式（浏览器请求 timeZone 参数的证据格式）。"""
+    return datetime.now().astimezone().strftime("%z")
+
+
 def _inclusive_day_window(days: int) -> tuple[str, str, str, str]:
     """返回包含今天的 N 个自然日窗口（两端含）。
 
@@ -472,7 +477,8 @@ def fetch_resting_heart_rate(
     _validate_lookback_days(days)
     start_ymd, end_ymd, start_iso, end_iso = _inclusive_day_window(days)
     raw = client.query_sample_set_stats(
-        start_day=int(start_ymd), end_day=int(end_ymd)
+        start_day=int(start_ymd), end_day=int(end_ymd),
+        timezone=_local_tz_offset(),
     )
     return parse_health_metric_stats(
         raw,
@@ -496,7 +502,8 @@ def fetch_hrv_stats(
     _validate_lookback_days(days)
     start_ymd, end_ymd, start_iso, end_iso = _inclusive_day_window(days)
     raw = client.query_health_record_stats(
-        field_names=[HRV_FIELD_NAME], start_day=start_ymd, end_day=end_ymd
+        field_names=[HRV_FIELD_NAME], start_day=start_ymd, end_day=end_ymd,
+        timezone=_local_tz_offset(),
     )
     return parse_health_metric_stats(
         raw,

@@ -32,6 +32,11 @@ SLEEP_RECORD_DATA_TYPE = "com.huawei.health.record.sleep"
 SLEEP_FRAGMENT_SUB_DATA_TYPE = "com.huawei.continuous.sleep.fragment"
 RESTING_HR_DATA_TYPE = "com.huawei.instantaneous.resting_heart_rate"
 
+# 统计请求公共字段（2026-08-17 源码模式 payload 证据确认；
+# groupOption 缺失时服务端 400 "[groupReqs[0].groupOption]must not be null"）
+STATS_STRATEGY = ["MAX", "MIN", "AVG", "SUM"]
+GROUP_OPTION_DAY = "day"
+
 
 class HTCClientError(Exception):
     """HTC 客户端所有异常的基类（网络层错误也归到这里）。"""
@@ -213,27 +218,57 @@ class HTCClient:
         }
         return self._get(HEALTH_RECORDS_URL, params)
 
+    @staticmethod
+    def _stats_req(
+        data_type: str,
+        start_day: Any,
+        end_day: Any,
+        timezone: str,
+        field_names: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """构造 periodStatistics 请求条目（源码 payload 契约）。
+
+        字段顺序与浏览器一致：dataType, [fieldNames], startDay, endDay,
+        strategy, groupOption, timeZone。
+        - groupOption="day"：必填（缺失即 400）
+        - strategy 四则统计（MAX/MIN/AVG/SUM）
+        - fieldNames 仅 healthRecords 族携带；sampleSet 静息心率
+          请求证据中无此键（fieldName 由服务端推断）
+        """
+        req: dict[str, Any] = {"dataType": data_type}
+        if field_names is not None:
+            req["fieldNames"] = list(field_names)
+        req.update(
+            {
+                "startDay": start_day,
+                "endDay": end_day,
+                "strategy": list(STATS_STRATEGY),
+                "groupOption": GROUP_OPTION_DAY,
+                "timeZone": timezone,
+            }
+        )
+        return req
+
     def query_health_record_stats(
         self,
         field_names: list[str],
         start_day: str,
         end_day: str,
+        timezone: str,
         data_type: str = SLEEP_RECORD_DATA_TYPE,
     ) -> dict[str, Any] | list[Any]:
         """按天统计健康记录字段（Phase 7，POST healthRecords stats）。
 
-        浏览器勘探证据契约（avgHrv 请求确认）：
+        浏览器源码 payload 契约（avgHrv 请求确认）：
         - startDay / endDay 为 "YYYYMMDD" 字符串（与 sampleSet 端点
           的数字写法不同，两者不混用）
+        - strategy / groupOption / timeZone 必填（groupOption="day"）
         - reqs 汇总统计 + groupReqs 按天分组，两者同构
         返回原始 JSON dict（results + groupResults）。
         """
-        req = {
-            "dataType": data_type,
-            "fieldNames": list(field_names),
-            "startDay": start_day,
-            "endDay": end_day,
-        }
+        req = self._stats_req(
+            data_type, start_day, end_day, timezone, field_names=field_names
+        )
         return self._post(
             {"reqs": [req], "groupReqs": [dict(req)]},
             url=HEALTH_RECORD_STATS_URL,
@@ -243,21 +278,21 @@ class HTCClient:
         self,
         start_day: int,
         end_day: int,
+        timezone: str,
         data_type: str = RESTING_HR_DATA_TYPE,
     ) -> dict[str, Any] | list[Any]:
         """按天统计瞬时采样数据（Phase 7，POST sampleSet stats）。
 
-        浏览器勘探证据契约（静息心率请求确认）：
-        - startDay / end_day 为数字（如 20260721，与 healthRecords
+        浏览器源码 payload 契约（同端点 trainingLoad 请求 +
+        静息心率折叠预览双证据确认）：
+        - startDay / endDay 为数字（如 20260721，与 healthRecords
           端点的字符串写法不同，两者不混用）
-        - 不携带 fieldNames（fieldName 由服务端推断，restBpm）
+        - 不携带 fieldNames（静息心率请求中 dataType 后直接
+          startDay；fieldName 由服务端推断，真实响应为 restBpm）
+        - strategy / groupOption / timeZone 必填（groupOption="day"）
         返回原始 JSON dict（results + groupResults）。
         """
-        req = {
-            "dataType": data_type,
-            "startDay": start_day,
-            "endDay": end_day,
-        }
+        req = self._stats_req(data_type, start_day, end_day, timezone)
         return self._post(
             {"reqs": [req], "groupReqs": [dict(req)]},
             url=SAMPLE_SET_STATS_URL,
