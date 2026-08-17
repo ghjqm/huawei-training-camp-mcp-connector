@@ -57,6 +57,10 @@ python -m venv .venv
 $env:HTC_AUTHORIZATION = "<你的 Authorization 值>"
 $env:HTC_CLIENT_ID     = "<你的 x-client-id 值>"
 
+# 2b.（可选）补全请求头仿真，降低被服务端拒绝的概率
+$env:HTC_VERSION = "HealthKitRunningGroupPortal_6.26.4.200"   # x-version 头
+$env:HTC_COOKIE  = "<浏览器请求头里 Cookie 的完整值>"          # Cookie 头
+
 # 3. （可选）真实 API 连通性自检（九种模式，任选）
 .\.venv\Scripts\python.exe scripts\test_real_htc.py                    # list：最近训练列表
 .\.venv\Scripts\python.exe scripts\test_real_htc.py detail             # detail：单次训练采样详情
@@ -70,6 +74,45 @@ $env:HTC_CLIENT_ID     = "<你的 x-client-id 值>"
 
 # 4. 启动 MCP 服务（stdio）
 .\.venv\Scripts\python.exe -m src.huawei_health_mcp.server
+```
+
+## PowerShell 快速测试卡（常用指令速查）
+
+> 全部命令在项目根目录执行；`$env:` 设置的变量只在当前终端窗口有效，
+> 新开窗口需要重新设置。四个凭证值的来源：浏览器 F12 → Network →
+> 任意一条对 `activityRecord:query` 的成功请求 → Request Headers。
+
+```powershell
+# ---------- 环境配置（每次新开终端的第一步） ----------
+$env:HTC_AUTHORIZATION = "<Authorization 值>"      # 必填
+$env:HTC_CLIENT_ID     = "<x-client-id 值>"        # 必填
+$env:HTC_VERSION       = "<x-version 值>"          # 可选
+$env:HTC_COOKIE        = "<Cookie 值>"             # 可选
+
+# 检查凭证是否已设置（只看前 20 个字符，避免整段 token 留在屏幕/日志里）
+($env:HTC_AUTHORIZATION ?? "<未设置>").Substring(0, 20)
+$env:HTC_CLIENT_ID ?? "<未设置>"
+
+# 清空本终端凭证（测试结束后建议执行）
+Remove-Item Env:HTC_AUTHORIZATION, Env:HTC_CLIENT_ID -ErrorAction SilentlyContinue
+
+# ---------- 快速健康检查 ----------
+.\.venv\Scripts\python.exe -m pytest -q                     # 全量单元测试（无需凭证，预期 244 passed）
+.\.venv\Scripts\python.exe scripts\test_real_htc.py         # 最快连通性检查（list 模式，5 条记录）
+
+# ---------- 常用验收组合 ----------
+.\.venv\Scripts\python.exe scripts\test_mcp_client.py       # MCP 客户端全工具验收（预期 12/12 passed）
+.\.venv\Scripts\python.exe scripts\test_real_htc.py sleep 7         # 昨晚睡眠（含自洽恒等式检查）
+.\.venv\Scripts\python.exe scripts\test_real_htc.py resting-hr 7    # 最近一周静息心率
+.\.venv\Scripts\python.exe scripts\test_real_htc.py hrv 7           # 最近一周 HRV
+.\.venv\Scripts\python.exe scripts\test_real_htc.py trend 8         # 最近 8 周训练趋势
+.\.venv\Scripts\python.exe scripts\test_real_htc.py trend-delta 8   # 相邻周环比
+
+# ---------- 结果速判 ----------
+# SUCCESS / passed = 链路正常
+# status=401 Invalid Credentials = token 过期 → 重新抓 Authorization（刷新页面后抓"新"请求）
+# WARNING: HTC_VERSION not set = 只是提示，不影响请求（可选头未配置）
+# WARNING: HTC_COOKIE not set = 同上
 ```
 
 ### 接入 MCP 客户端（如 Claude Desktop / Cherry Studio 等）
