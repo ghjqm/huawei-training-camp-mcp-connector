@@ -20,6 +20,9 @@ Huawei Training Camp / Huawei Health 网页端的运动训练数据。
 | `get_training_period_comparison(window_days=7, limit=100)` | 两个连续周期对比：最近 N 天 vs 之前 N 天（每指标 baseline / current / delta / percentage_change；缺失≠0，baseline 为 0 或缺失时 pct 为 None 不除零） |
 | `get_training_weekly_trend(weeks=4, limit=100)` | 最近 N 个连续周窗口的训练量趋势（滚动 7 天窗口、同一时间锚点、不重叠；每周完整周期聚合：次数/距离/历时/卡路里/步数/爬降/心率/类型分组，含总纯运动时长与周期配速） |
 | `get_training_weekly_trend_delta(weeks=4, limit=100)` | 相邻周环比（older → newer，最多 weeks-1 对；复用周期对比的 delta/percentage_change 数学契约；weeks=1 返回空数组；环比指标清单暂不含周期配速，周聚合新字段见 get_training_weekly_trend） |
+| `get_sleep_records(days=14)` | 最近 N 天睡眠记录（每晚：上床/入睡/醒来时刻，浅睡/深睡/快速眼动/清醒分段分钟，总睡眠、得分、效率、入睡用时、夜醒次数；服务端解析口径，无本地推断） |
+| `get_resting_heart_rate(days=28)` | 最近 N 天静息心率统计（服务端聚合：全窗口 avg/max/min/count + 按天明细；fieldName=restBpm，bpm） |
+| `get_hrv_stats(days=28)` | 最近 N 天 HRV 统计（服务端聚合：全窗口 + 按天明细；fieldName=avgHrv，数值原样返回——华为未声明单位与算法口径，不擅自换算） |
 
 - `lookback_days`：查询窗口天数，默认 30，范围 1~730；查更早的训练时调大。
 - `weeks`（周趋势）：周窗口数，默认 4，范围 1~104（总跨度 ≤728 天 ≤730 上限）；
@@ -54,13 +57,16 @@ python -m venv .venv
 $env:HTC_AUTHORIZATION = "<你的 Authorization 值>"
 $env:HTC_CLIENT_ID     = "<你的 x-client-id 值>"
 
-# 3. （可选）真实 API 连通性自检（六种模式，任选）
+# 3. （可选）真实 API 连通性自检（九种模式，任选）
 .\.venv\Scripts\python.exe scripts\test_real_htc.py                    # list：最近训练列表
 .\.venv\Scripts\python.exe scripts\test_real_htc.py detail             # detail：单次训练采样详情
 .\.venv\Scripts\python.exe scripts\test_real_htc.py period             # period：周期聚合
 .\.venv\Scripts\python.exe scripts\test_real_htc.py comparison 7       # comparison：连续两窗口对比
 .\.venv\Scripts\python.exe scripts\test_real_htc.py trend 4            # trend：滚动周窗口趋势
 .\.venv\Scripts\python.exe scripts\test_real_htc.py trend-delta 4      # trend-delta：相邻周环比
+.\.venv\Scripts\python.exe scripts\test_real_htc.py sleep 14           # sleep：睡眠记录 + 自洽检查
+.\.venv\Scripts\python.exe scripts\test_real_htc.py resting-hr 28      # resting-hr：静息心率统计
+.\.venv\Scripts\python.exe scripts\test_real_htc.py hrv 28             # hrv：HRV 统计
 
 # 4. 启动 MCP 服务（stdio）
 .\.venv\Scripts\python.exe -m src.huawei_health_mcp.server
@@ -99,14 +105,16 @@ $env:HTC_CLIENT_ID     = "<你的 x-client-id 值>"
 ```
 src/huawei_health_mcp/
 ├─ client.py             # HTCClient：HTTP 取数，返回原始 JSON（不解析）
-├─ parser.py             # 原始 JSON → 标准模型（时间戳契约：记录 ms / 采样 ns）
-├─ models.py             # Pydantic 模型（ActivityRecord / ActivityDetail / TrainingSummary 族）
+├─ parser.py             # 训练原始 JSON → 标准模型（时间戳契约：记录 ms / 采样 ns）
+├─ health_parser.py      # 恢复状态解析（睡眠记录 / 静息心率 / HRV 统计）
+├─ models.py             # Pydantic 模型（ActivityRecord / TrainingSummary / SleepRecord / HealthMetricStats 族）
 ├─ analysis.py           # 确定性统计分析（ActivityDetail → TrainingSummary）
 ├─ period_analysis.py    # 周期聚合（多 ActivityRecord → TrainingPeriodSummary）
 ├─ period_comparison.py  # 周期对比（两个 TrainingPeriodSummary → TrainingPeriodComparison）
 ├─ trend_analysis.py     # 滚动周趋势与相邻周环比（复用聚合层与对比层）
 └─ server.py             # FastMCP 服务与工具接线
-scripts/test_real_htc.py   # 人工真实请求脚本（list / detail / period / comparison / trend / trend-delta 六模式，需要环境变量凭证）
+scripts/test_real_htc.py   # 人工真实请求脚本（list / detail / period / comparison / trend / trend-delta / sleep / resting-hr / hrv 九模式，需要环境变量凭证）
+scripts/test_mcp_client.py # 真实 MCP 客户端验收（12 个 tool 全调用，需要环境变量凭证）
 tests/                     # 单元测试（synthetic fixture，无真实用户数据）
 PROJECT_STATE.md           # 项目长期状态账本（新贡献者/Agent 从这里恢复上下文）
 ```
@@ -120,6 +128,9 @@ PROJECT_STATE.md           # 项目长期状态账本（新贡献者/Agent 从�
 - 记录级与详情顶层时间为毫秒；采集器 / 采样点时间为纳秒
 - 采样值 `floatValue` → float、`integerValue` → int
 - 请求的数据类型不保证全部返回（`details` / `samplePoints` 可为空，属正常）
+- 恢复状态端点（Phase 7 勘探确认）：`GET /healthRecords` 时间戳为纳秒；
+  `healthRecords` 统计的 startDay/endDay 为字符串、`sampleSet` 统计为数字
+  （两端口径不混用）；睡眠分段为分钟（light+deep+dream=all 自洽）
 
 ## 许可证
 

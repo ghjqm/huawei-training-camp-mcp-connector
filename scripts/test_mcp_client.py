@@ -2,7 +2,7 @@
 
 以真实 MCP 客户端身份（mcp 库，与服务端同源协议）拉起本项目的
 FastMCP 服务，走完整 JSON-RPC 出站链路：initialize → list_tools →
-逐个调用全部 9 个 tool。这是「真实 MCP 客户端验收」的脚本化路径；
+逐个调用全部 12 个 tool。这是「真实 MCP 客户端验收」的脚本化路径；
 等价的人工路径是按 README 接入 Claude Desktop / Cherry Studio 等。
 
 运行方式（项目根目录，凭证环境变量需已设置，与 test_real_htc.py 相同）：
@@ -25,7 +25,7 @@ from mcp.client.stdio import stdio_client
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# 与 server.py 注册的工具一一对应（9 个）
+# 与 server.py 注册的工具一一对应（12 个）
 EXPECTED_TOOLS = [
     "health_check",
     "get_recent_activities",
@@ -36,6 +36,9 @@ EXPECTED_TOOLS = [
     "get_training_period_comparison",
     "get_training_weekly_trend",
     "get_training_weekly_trend_delta",
+    "get_sleep_records",
+    "get_resting_heart_rate",
+    "get_hrv_stats",
 ]
 
 REQUIRED_ENV = ("HTC_AUTHORIZATION", "HTC_CLIENT_ID")
@@ -145,6 +148,15 @@ async def main() -> int:
                 ("get_training_period_comparison", {}),
                 ("get_training_weekly_trend", {"weeks": 4}),
                 ("get_training_weekly_trend_delta", {"weeks": 4}),
+            ):
+                ok, _, brief = await call(session, name, args)
+                results.append((name, ok, brief))
+
+            # 10-12) 恢复状态族（Phase 7：睡眠 / 静息心率 / HRV）
+            for name, args in (
+                ("get_sleep_records", {"days": 7}),
+                ("get_resting_heart_rate", {"days": 28}),
+                ("get_hrv_stats", {"days": 28}),
             ):
                 ok, _, brief = await call(session, name, args)
                 results.append((name, ok, brief))

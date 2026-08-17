@@ -17,9 +17,20 @@ from typing import Any, Optional
 import httpx
 
 # API 地址集中管理，避免在方法里到处硬编码 URL
-ACTIVITY_RECORD_QUERY_URL = (
-    "https://hihealthbase-drcn.things.dbankcloud.cn/healthrunninggroup/v1/activityRecord:query"
-)
+_BASE_URL = "https://hihealthbase-drcn.things.dbankcloud.cn/healthrunninggroup/v1"
+
+ACTIVITY_RECORD_QUERY_URL = f"{_BASE_URL}/activityRecord:query"
+
+# Phase 7 恢复状态数据域端点（2026-08 浏览器勘探证据确认，
+# 请求/响应样本见 data_temp/htc探查.txt，git-ignored）
+HEALTH_RECORDS_URL = f"{_BASE_URL}/healthRecords"
+HEALTH_RECORD_STATS_URL = f"{_BASE_URL}/healthRecords/periodStatistics:calculate"
+SAMPLE_SET_STATS_URL = f"{_BASE_URL}/sampleSet/periodStatistics:calculate"
+
+# 数据类型常量（与浏览器成功请求逐字一致）
+SLEEP_RECORD_DATA_TYPE = "com.huawei.health.record.sleep"
+SLEEP_FRAGMENT_SUB_DATA_TYPE = "com.huawei.continuous.sleep.fragment"
+RESTING_HR_DATA_TYPE = "com.huawei.instantaneous.resting_heart_rate"
 
 
 class HTCClientError(Exception):
@@ -77,10 +88,19 @@ class HTCClient:
             headers=self._headers, timeout=self._timeout
         )
 
-    def _post(self, payload: dict[str, Any]) -> dict[str, Any] | list[Any]:
-        """发送 POST，检查 HTTP 状态，解析 JSON，返回 dict。"""
+    def _post(
+        self,
+        payload: dict[str, Any],
+        url: Optional[str] = None,
+    ) -> dict[str, Any] | list[Any]:
+        """发送 POST，检查 HTTP 状态，解析 JSON，返回 dict。
+
+        url 缺省用 self._url（activityRecord:query）；Phase 7 起多个
+        端点共用一个客户端实例，调用方可显式传入端点 URL。
+        """
+        request_url = url or self._url
         try:
-            response = self._client.post(self._url, json=payload)
+            response = self._client.post(request_url, json=payload)
         except httpx.HTTPError as exc:  # 网络层错误（超时、DNS、连接失败等）
             raise HTCClientError(f"HTC 请求发生网络错误：{exc}") from exc
 
@@ -88,7 +108,7 @@ class HTCClient:
         if response.status_code < 200 or response.status_code >= 400:
             raise HTCHTTPError(
                 status_code=response.status_code,
-                url=self._url,
+                url=request_url,
                 message=(response.text or "")[:200],
             )
 
@@ -96,7 +116,34 @@ class HTCClient:
         try:
             return response.json()
         except ValueError as exc:
-            raise HTCResponseError(url=self._url, message=str(exc)) from exc
+            raise HTCResponseError(url=request_url, message=str(exc)) from exc
+
+    def _get(
+        self,
+        url: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any] | list[Any]:
+        """发送 GET（带 query 参数），检查 HTTP 状态，解析 JSON。
+
+        错误契约与 _post 完全一致（Phase 7 新增，供 /healthRecords
+        这类 GET 端点使用）。
+        """
+        try:
+            response = self._client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            raise HTCClientError(f"HTC 请求发生网络错误：{exc}") from exc
+
+        if response.status_code < 200 or response.status_code >= 400:
+            raise HTCHTTPError(
+                status_code=response.status_code,
+                url=str(response.request.url),
+                message=(response.text or "")[:200],
+            )
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise HTCResponseError(url=url, message=str(exc)) from exc
 
     def query_activity_records(
         self,
@@ -140,6 +187,81 @@ class HTCClient:
             "highFreqDetailsPreferred": high_freq_details_preferred,
         }
         return self._post(payload)
+
+    def query_sleep_records(
+        self,
+        start_time_ns: int,
+        end_time_ns: int,
+        data_type: str = SLEEP_RECORD_DATA_TYPE,
+        sub_data_type: str = SLEEP_FRAGMENT_SUB_DATA_TYPE,
+    ) -> dict[str, Any] | list[Any]:
+        """查询睡眠健康记录（Phase 7，GET /healthRecords）。
+
+        浏览器勘探证据契约：
+        - startTime / endTime 为纳秒时间戳（1e18 量级，与活动列表的
+          毫秒字符串不同）
+        - dataType=com.huawei.health.record.sleep
+        - subDataType=com.huawei.continuous.sleep.fragment（浏览器
+          成功请求原样携带；fragment 子结构本层不解析）
+        返回原始 JSON dict，不解析为 SleepRecord。
+        """
+        params = {
+            "startTime": start_time_ns,
+            "endTime": end_time_ns,
+            "dataType": data_type,
+            "subDataType": sub_data_type,
+        }
+        return self._get(HEALTH_RECORDS_URL, params)
+
+    def query_health_record_stats(
+        self,
+        field_names: list[str],
+        start_day: str,
+        end_day: str,
+        data_type: str = SLEEP_RECORD_DATA_TYPE,
+    ) -> dict[str, Any] | list[Any]:
+        """按天统计健康记录字段（Phase 7，POST healthRecords stats）。
+
+        浏览器勘探证据契约（avgHrv 请求确认）：
+        - startDay / endDay 为 "YYYYMMDD" 字符串（与 sampleSet 端点
+          的数字写法不同，两者不混用）
+        - reqs 汇总统计 + groupReqs 按天分组，两者同构
+        返回原始 JSON dict（results + groupResults）。
+        """
+        req = {
+            "dataType": data_type,
+            "fieldNames": list(field_names),
+            "startDay": start_day,
+            "endDay": end_day,
+        }
+        return self._post(
+            {"reqs": [req], "groupReqs": [dict(req)]},
+            url=HEALTH_RECORD_STATS_URL,
+        )
+
+    def query_sample_set_stats(
+        self,
+        start_day: int,
+        end_day: int,
+        data_type: str = RESTING_HR_DATA_TYPE,
+    ) -> dict[str, Any] | list[Any]:
+        """按天统计瞬时采样数据（Phase 7，POST sampleSet stats）。
+
+        浏览器勘探证据契约（静息心率请求确认）：
+        - startDay / end_day 为数字（如 20260721，与 healthRecords
+          端点的字符串写法不同，两者不混用）
+        - 不携带 fieldNames（fieldName 由服务端推断，restBpm）
+        返回原始 JSON dict（results + groupResults）。
+        """
+        req = {
+            "dataType": data_type,
+            "startDay": start_day,
+            "endDay": end_day,
+        }
+        return self._post(
+            {"reqs": [req], "groupReqs": [dict(req)]},
+            url=SAMPLE_SET_STATS_URL,
+        )
 
     def close(self) -> None:
         """关闭底层 httpx 客户端。"""

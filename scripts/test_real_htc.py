@@ -9,6 +9,9 @@ pytest 中的全部测试（tests/）仍然使用 MockTransport，不访问真�
     python scripts/test_real_htc.py comparison [N]   # 对比模式：最近 N 天 vs 之前 N 天（默认 7）
     python scripts/test_real_htc.py trend [N]        # 趋势模式：最近 N 个滚动周窗口训练趋势（默认 4）
     python scripts/test_real_htc.py trend-delta [N]  # 环比模式：相邻周 older→newer 环比（默认 4）
+    python scripts/test_real_htc.py sleep [N]        # 睡眠模式：最近 N 天睡眠记录 + 自洽恒等式检查（默认 14）
+    python scripts/test_real_htc.py resting-hr [N]   # 静息心率模式：最近 N 天 restBpm 统计（默认 28）
+    python scripts/test_real_htc.py hrv [N]          # HRV 模式：最近 N 天 avgHrv 统计（默认 28）
 
 前置条件（环境变量 -> HTTP 请求头，映射来自用户确认的浏览器成功请求）：
     HTC_AUTHORIZATION -> Authorization: Bearer <敏感值>
@@ -51,8 +54,11 @@ if str(PROJECT_ROOT) not in sys.path:
 # - server.py：时间范围与列表抽取辅助（与 get_recent_activities 同一逻辑）
 from src.huawei_health_mcp.client import (  # noqa: E402
     ACTIVITY_RECORD_QUERY_URL,
+    HEALTH_RECORDS_URL,
+    HEALTH_RECORD_STATS_URL,
     HTCClient,
     HTCClientError,
+    SAMPLE_SET_STATS_URL,
 )
 from src.huawei_health_mcp.parser import parse_activity_record  # noqa: E402
 from src.huawei_health_mcp.period_analysis import (  # noqa: E402
@@ -61,7 +67,10 @@ from src.huawei_health_mcp.period_analysis import (  # noqa: E402
 from src.huawei_health_mcp.server import (  # noqa: E402
     _default_time_range,
     _extract_activity_list,
+    fetch_hrv_stats,
     fetch_period_comparison,
+    fetch_resting_heart_rate,
+    fetch_sleep_records,
     fetch_weekly_trend,
     fetch_weekly_trend_delta,
 )
@@ -525,6 +534,135 @@ def run_trend_delta_mode(headers: dict[str, str], argv: list[str]) -> int:
     return 0
 
 
+def _parse_days(argv: list[str], default: int) -> int | None:
+    """解析可选的天数参数（恢复状态模式共用；1~730 与 MCP 校验一致）。"""
+    if len(argv) <= 2:
+        return default
+    try:
+        days = int(argv[2])
+    except ValueError:
+        print(f"Invalid days: {argv[2]!r} (expected an integer 1~730)")
+        return None
+    if not 1 <= days <= 730:
+        print(f"days out of range: {days} (expected 1~730)")
+        return None
+    return days
+
+
+def run_sleep_mode(headers: dict[str, str], argv: list[str]) -> int:
+    """睡眠模式：最近 N 天睡眠记录真实链路验证（默认 14）。
+
+    100% 复用 fetch_sleep_records（GET /healthRecords + parser），
+    每晚打印入睡/醒来时刻、分段分钟与得分；对每条记录做两条
+    自洽恒等式检查（分段和 = 总睡眠；入睡→醒来跨度 = 总睡眠+清醒）。
+    """
+    days = _parse_days(argv, default=14)
+    if days is None:
+        return 1
+
+    client = HTCClient(headers=headers)
+    try:
+        records = fetch_sleep_records(client, days=days)
+    except ValueError as exc:
+        print(f"Invalid days: {exc}")
+        return 1
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {HEALTH_RECORDS_URL}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC API request: SUCCESS (GET /healthRecords, HTTP 2xx)")
+    print(f"days={days} records={len(records)}")
+    for i, r in enumerate(records, start=1):
+        print(f"[night {i}/{len(records)}]")
+        print(f"  fall_asleep={_fmt_local(r.fall_asleep_time)} wakeup={_fmt_local(r.wakeup_time)}")
+        parts = [
+            f"light={r.light_sleep_minutes}", f"deep={r.deep_sleep_minutes}",
+            f"dream={r.dream_sleep_minutes}", f"awake={r.awake_minutes}",
+            f"total={r.total_sleep_minutes}",
+        ]
+        print("  " + ", ".join(p + "min" if not p.endswith("None") else p for p in parts))
+        print(f"  score={r.sleep_score} efficiency={r.sleep_efficiency_percent}% "
+              f"latency={r.sleep_latency_minutes}min wakeups={r.wakeup_count}")
+        # 自洽恒等式（真实数据已验证成立；不成立即契约漂移信号）
+        seg = [r.light_sleep_minutes, r.deep_sleep_minutes, r.dream_sleep_minutes,
+               r.total_sleep_minutes]
+        if all(v is not None for v in seg):
+            ok = seg[0] + seg[1] + seg[2] == seg[3]
+            print(f"  self-check stages_sum==total: {'OK' if ok else 'MISMATCH!'}")
+        if None not in (r.fall_asleep_time, r.wakeup_time, r.total_sleep_minutes,
+                        r.awake_minutes):
+            span = (r.wakeup_time - r.fall_asleep_time).total_seconds() / 60
+            ok2 = abs(span - (r.total_sleep_minutes + r.awake_minutes)) <= 1
+            print(f"  self-check span==total+awake: {'OK' if ok2 else 'MISMATCH!'}")
+    if not records:
+        print("(no sleep records in window — check device sync / wear history)")
+    return 0
+
+
+def _run_stats_mode(
+    label: str,
+    fetch_fn,
+    url: str,
+    argv: list[str],
+    default_days: int,
+) -> int:
+    """静息心率 / HRV 统计模式共用 runner（服务端聚合，本地不计算）。"""
+    days = _parse_days(argv, default=default_days)
+    if days is None:
+        return 1
+
+    client = HTCClient(headers=headers)
+    try:
+        stats = fetch_fn(client, days=days)
+    except ValueError as exc:
+        print(f"Invalid days: {exc}")
+        return 1
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {url}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print(f"HTC API request: SUCCESS ({label}, HTTP 2xx)")
+    print(f"days={days} window=[{stats.start_day} .. {stats.end_day}] "
+          f"field_name={stats.field_name}")
+    o = stats.overall
+    print(f"[overall] avg={o.avg} max={o.max} min={o.min} count={o.count}")
+    print(f"[daily] entries={len(stats.daily)}")
+    for d in stats.daily:
+        s = d.stats
+        extras = "".join(
+            f" {k}={v}" for k, v in (("max", s.max), ("min", s.min), ("count", s.count))
+            if v is not None
+        )
+        print(f"  {d.day}: avg={s.avg}{extras}")
+    if not stats.daily and o.avg is None:
+        print("(no data in window — metric may be missing for this account)")
+    return 0
+
+
+def run_resting_hr_mode(headers: dict[str, str], argv: list[str]) -> int:
+    """静息心率模式：最近 N 天 restBpm 统计（默认 28，sampleSet 端点）。"""
+    return _run_stats_mode(
+        "sampleSet periodStatistics", fetch_resting_heart_rate,
+        SAMPLE_SET_STATS_URL, argv, default_days=28,
+    )
+
+
+def run_hrv_mode(headers: dict[str, str], argv: list[str]) -> int:
+    """HRV 模式：最近 N 天 avgHrv 统计（默认 28，healthRecords 端点）。"""
+    return _run_stats_mode(
+        "healthRecords periodStatistics", fetch_hrv_stats,
+        HEALTH_RECORD_STATS_URL, argv, default_days=28,
+    )
+
+
 def main() -> int:
     headers = build_headers()
     if headers is None:
@@ -542,6 +680,12 @@ def main() -> int:
         return run_trend_mode(headers, argv)
     if mode == "trend-delta":
         return run_trend_delta_mode(headers, argv)
+    if mode == "sleep":
+        return run_sleep_mode(headers, argv)
+    if mode == "resting-hr":
+        return run_resting_hr_mode(headers, argv)
+    if mode == "hrv":
+        return run_hrv_mode(headers, argv)
     return run_list_mode(headers)
 
 

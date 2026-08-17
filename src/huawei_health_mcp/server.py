@@ -24,10 +24,18 @@ from .analysis import compute_session_metrics, summarize_activity_detail
 from .period_analysis import aggregate_activity_period
 from .period_comparison import compare_training_periods
 from .trend_analysis import aggregate_weekly_trend, compute_weekly_trend_delta
-from .client import HTCClient, HTCClientError
+from .client import (
+    RESTING_HR_DATA_TYPE,
+    SLEEP_RECORD_DATA_TYPE,
+    HTCClient,
+    HTCClientError,
+)
+from .health_parser import parse_health_metric_stats, parse_sleep_records
 from .models import (
     ActivityDetail,
     ActivityRecord,
+    HealthMetricStats,
+    SleepRecord,
     TrainingPeriodComparison,
     TrainingSummary,
     TrainingTrendDelta,
@@ -398,6 +406,108 @@ def fetch_weekly_trend_delta(
     return compute_weekly_trend_delta(trend)
 
 
+# 恢复状态统计的 HRV 字段名（浏览器勘探证据：dataType=sleep 记录
+# 上按 fieldNames=["avgHrv"] 查询，服务端按同名 fieldName 返回）
+HRV_FIELD_NAME = "avgHrv"
+
+# 恢复状态工具默认查询天数
+DEFAULT_SLEEP_DAYS = 14
+DEFAULT_RECOVERY_DAYS = 28
+
+
+def _local_midnight() -> datetime:
+    """本地时区今天的 00:00（统计端点的自然日语义由服务端按账号
+    时区解释；这里只负责生成与浏览器一致的本地日窗口）。"""
+    return datetime.now().astimezone().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def _inclusive_day_window(days: int) -> tuple[str, str, str, str]:
+    """返回包含今天的 N 个自然日窗口（两端含）。
+
+    返回 (start_ymd, end_ymd, start_iso, end_iso)。证据契约：
+    startDay=20260721..endDay=20260817 的 28 天窗口 count=28，
+    即两端均为闭区间。
+    """
+    today = _local_midnight()
+    start = today - timedelta(days=days - 1)
+    return (
+        start.strftime("%Y%m%d"),
+        today.strftime("%Y%m%d"),
+        start.strftime("%Y-%m-%d"),
+        today.strftime("%Y-%m-%d"),
+    )
+
+
+def fetch_sleep_records(client: HTCClient, days: int = DEFAULT_SLEEP_DAYS) -> list[SleepRecord]:
+    """查询最近 N 天睡眠记录（Phase 7，GET /healthRecords）。
+
+    查询窗口为尾随窗口 [now - N天, now]（本地时区，纳秒时间戳）。
+    证据依据：浏览器 1 天窗口 [capture-24h, capture]（边界为
+    capture 时刻本身），不与任何时区的自然日对齐——尾随窗口对
+    自然日对齐语义同样稳健（同长度的自然日窗口必被包含）。
+    服务端按何种规则纳入记录无公开契约，本层不本地过滤、
+    原样返回解析结果（按记录 startTime 升序）。
+    """
+    _validate_lookback_days(days)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    raw = client.query_sleep_records(
+        start_time_ns=int(start.timestamp()) * 1_000_000_000,
+        end_time_ns=int(now.timestamp()) * 1_000_000_000,
+    )
+    return parse_sleep_records(raw)
+
+
+def fetch_resting_heart_rate(
+    client: HTCClient, days: int = DEFAULT_RECOVERY_DAYS
+) -> HealthMetricStats:
+    """查询最近 N 天静息心率统计（Phase 7，sampleSet stats 端点）。
+
+    一次 POST 同时携带 reqs（全窗口汇总）与 groupReqs（按天分组）；
+    startDay/endDay 为数字写法（端点契约）。fieldName 由服务端推断
+    （真实响应为 restBpm）。全部统计为服务端口径，本地不换算。
+    """
+    _validate_lookback_days(days)
+    start_ymd, end_ymd, start_iso, end_iso = _inclusive_day_window(days)
+    raw = client.query_sample_set_stats(
+        start_day=int(start_ymd), end_day=int(end_ymd)
+    )
+    return parse_health_metric_stats(
+        raw,
+        data_type=RESTING_HR_DATA_TYPE,
+        days=days,
+        start_day=start_iso,
+        end_day=end_iso,
+        field_name=None,  # 服务端推断（真实响应 fieldName=restBpm）
+    )
+
+
+def fetch_hrv_stats(
+    client: HTCClient, days: int = DEFAULT_RECOVERY_DAYS
+) -> HealthMetricStats:
+    """查询最近 N 天 HRV 统计（Phase 7，healthRecords stats 端点）。
+
+    dataType 为睡眠记录、fieldNames=["avgHrv"]、startDay/endDay 为
+    字符串写法（端点契约，与 sampleSet 的数字写法区分）。
+    avgHrv 数值原样返回（华为未声明单位，不擅自换算）。
+    """
+    _validate_lookback_days(days)
+    start_ymd, end_ymd, start_iso, end_iso = _inclusive_day_window(days)
+    raw = client.query_health_record_stats(
+        field_names=[HRV_FIELD_NAME], start_day=start_ymd, end_day=end_ymd
+    )
+    return parse_health_metric_stats(
+        raw,
+        data_type=SLEEP_RECORD_DATA_TYPE,
+        days=days,
+        start_day=start_iso,
+        end_day=end_iso,
+        field_name=HRV_FIELD_NAME,
+    )
+
+
 @mcp.tool()
 def health_check() -> dict:
     """健康检查：确认 MCP 服务是否正常运行。
@@ -750,6 +860,119 @@ def get_training_weekly_trend_delta(weeks: int = 4, limit: int = 100) -> dict:
     finally:
         client.close()
     return delta.model_dump(mode="json")
+
+
+@mcp.tool()
+def get_sleep_records(days: int = DEFAULT_SLEEP_DAYS) -> list[dict]:
+    """获取最近 N 晚的睡眠记录（服务端解析口径，无本地推断）。
+
+    通过 HTC /healthRecords 接口查询 dataType=sleep 的健康记录，
+    每晚一条：上床 / 入睡 / 醒来时间，浅睡 / 深睡 / 快速眼动 / 清醒
+    分段时长（分钟），总睡眠时长、睡眠得分、睡眠效率、入睡用时、
+    夜醒次数等。
+
+    参数：
+        days: 查询最近多少天的睡眠记录（默认 14，范围 1~730）。
+            窗口为本地时区自然日推广（含昨晚）。
+
+    返回：
+        SleepRecord 列表（按入睡时间升序），每条包含：
+        - go_bed_time / fall_asleep_time / wakeup_time：时刻
+        - light/deep/dream/awake_*_minutes：分段时长（分钟）
+        - total_sleep_minutes：总睡眠（真实数据自洽验证：
+          199+165+106=470）
+        - sleep_score / sleep_efficiency_percent / sleep_latency_minutes /
+          wakeup_count
+        - deep_sleep_part / sleep_type：华为语义未公开，原样保留
+        缺失字段为 None；无睡眠数据的夜晚不生成记录。
+
+    说明：
+        认证信息从环境变量读取；本项目不实现登录，
+        也不猜测或绕过任何认证机制。
+    """
+    _validate_lookback_days(days)
+    client = create_htc_client()
+    try:
+        records = fetch_sleep_records(client, days=days)
+    finally:
+        client.close()
+    return [r.model_dump(mode="json") for r in records]
+
+
+@mcp.tool()
+def get_resting_heart_rate(days: int = DEFAULT_RECOVERY_DAYS) -> dict:
+    """获取最近 N 天的静息心率统计（服务端聚合，无本地计算）。
+
+    通过 HTC sampleSet 统计端点查询 dataType=
+    com.huawei.instantaneous.resting_heart_rate：全窗口汇总统计 +
+    按天分组明细（自然日语义由服务端按账号时区解释）。
+
+    参数：
+        days: 统计窗口天数（默认 28，范围 1~730；含今天，两端闭区间）。
+
+    返回：
+        HealthMetricStats 结构：
+        - field_name：服务端返回的字段名（真实响应为 restBpm）
+        - overall：全窗口 {avg, max, min, count}（bpm）
+        - daily：按天 {day: "YYYY-MM-DD", stats} 列表（升序）；
+          没有测量数据的日期不出现（静息心率非每日必有）
+        - days / start_day / end_day：请求窗口
+
+    语义说明：
+        - 全部统计为华为服务端口径（每天一次测量按 count=1 计）
+        - 缺失统计为 None（不伪造 0）；窗口内无数据时 overall 与
+          daily 为空结构
+
+    说明：
+        认证信息从环境变量读取；本项目不实现登录，
+        也不猜测或绕过任何认证机制。
+    """
+    _validate_lookback_days(days)
+    client = create_htc_client()
+    try:
+        stats = fetch_resting_heart_rate(client, days=days)
+    finally:
+        client.close()
+    return stats.model_dump(mode="json")
+
+
+@mcp.tool()
+def get_hrv_stats(days: int = DEFAULT_RECOVERY_DAYS) -> dict:
+    """获取最近 N 天的 HRV 统计（服务端聚合，无本地计算）。
+
+    通过 HTC healthRecords 统计端点按 fieldNames=["avgHrv"] 查询
+    （dataType 为睡眠记录，即夜间 HRV）：全窗口汇总统计 + 按天分组
+    明细（自然日语义由服务端按账号时区解释）。
+
+    参数：
+        days: 统计窗口天数（默认 28，范围 1~730；含今天，两端闭区间）。
+
+    返回：
+        HealthMetricStats 结构：
+        - field_name："avgHrv"（服务端返回）
+        - overall：全窗口 {avg, max, min, count}
+        - daily：按天 {day: "YYYY-MM-DD", stats} 列表（升序）；
+          没有佩戴/睡眠数据的日期不出现
+        - days / start_day / end_day：请求窗口
+
+    语义说明：
+        - avgHrv 数值原样返回：华为未在响应中声明单位（典型 R-R
+          间期毫秒量级），本项目不擅自换算或推断算法口径
+          （如 RMSSD / SDNN 的区分未公开）
+        - 缺失统计为 None（不伪造 0）；窗口内无数据时 overall 与
+          daily 为空结构
+
+    说明：
+        认证信息从环境变量读取；本项目不实现登录，
+        也不猜测或绕过任何认证机制。
+    """
+    _validate_lookback_days(days)
+    client = create_htc_client()
+    try:
+        stats = fetch_hrv_stats(client, days=days)
+    finally:
+        client.close()
+    return stats.model_dump(mode="json")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 
 ## Current Phase
 
-审计加固轮（6.14 后）：全代码审阅 + 健壮性压力测试 → parser 6 处容错缺陷修复 — **PASS**
+Phase 7：恢复状态数据域（睡眠 / 静息心率 / HRV，3 个独立 tool）— **代码完成，Mock 全绿（244 passed），待用户真实验收**
 
 ## Completed
 
@@ -29,28 +29,31 @@
 - Phase 6.13：activeTime 毫秒契约落地 + 周期活跃时间聚合与周期配速——证据 A/B（5 条真实记录：activeTime(ms)/跨度比 0.625~0.999 全 ∈(0,1]；distance÷(activeTime_ms/1000) 与设备 paceSummary.avgPace 5/5 精确恒等，如 8010m/2859s=356.93 vs 356.92883）确认 activeTime=毫秒、设备配速口径=activeTime/distance；ActivityRecord +active_time_ms（记录级顶层 activeTime，int 毫秒原样保留，与既有 active_time 同源同值）；TrainingPeriodSummary / ActivityTypeSummary 对称 +total_active_time_seconds（Σms/1000，全仓唯一单位换算点）+ active_time_activity_count + average_pace_seconds_per_km（ΣactiveTime_s/Σdistance_km，双值活动子集）+ pace_activity_count，全缺→None 不伪造 0；models.py 三处单位注释修正（active_time / active_time_raw / TrainingSummary.active_time）；trend / comparison 层零改动（内嵌 summary 自动继承），compare_metric 与 transition 指标清单不动（对比是否加配速留待 Manager）；test_real_htc.py：trend-delta 的 delta 浮点噪声修复（_fmt_delta：float 两位小数带符号、int 原样、None→N/A）+ _print_period_summary 增打 total_active_time / average_pace（None→N/A）；README 三表格行补新字段说明；真实 fixture 在 6.12 真实验收后刷新（5 条：2×type56+3×type90，总距 22570m），6 处精确断言随新 fixture 重新核对（22570/1154.0/70.5/70.7/25712）；+12 测试（parser 3 + 周期聚合 6 + 证据 B 恒等式永久回归 1（容差 0.01 s/km，fixture 缺失 skip）+ 脚本格式化 2）
 - 审计加固轮（2026-08-17）：全代码审阅（client/parser/models/analysis/period/trend/comparison/server）+ 合成 malformed 数据压力测试（tests/test_robustness.py，36 项）暴露 21 处真实 crash——全部违反 parse_activity_record/parse_activity_detail 的“不抛错”docstring 契约（单条毒记录可炸掉整批 get_recent_activities 解析）。修复全部集中在 parser.py 容错边界：(1) _ms_to_datetime/_ns_to_datetime 类型守卫+超界捕获（字符串/float/dict 时间戳、负值/超 datetime 范围 → None）；(2) _as_float/_as_int 容错转换（垃圾字符串/dict/list → None；NaN/inf 为 JSON 非法值归 None；数字字符串宽松接受）；(3) performanceSummary 非 dict 形状守卫（字符串时 .get() AttributeError——审阅时未预见、压力测试暴露）；(4) speed 统计字段先 _as_float 再比较（此前字符串 avgSpeed 使 `> 0` 直接 TypeError）；(5) _iter_sample_points 采样值经 _as_float（垃圾 stringValue 跳过）；(6) 配速 0/负值显式视为无效标记回退速度推导（与 posture -1 标记同风格，行为等价原 or 写法但显式化）。性能压力：5000 条记录（5% 毒数据）解析 0.08s / 聚合 0.02s / 104 周归窗+环比 0.04s / 周期对比 0.01s；解析幂等。观察项不修（无 crash 风险、真实数据从未出现、属数据语义非契约）：_duration_of 负时长（end<start）无防护、activityType=0 falsy fallback、单条 distance≤0 参与配速分子分母（总体已有 total>0 防护）；+36 测试
 - Phase 6.14：真实 MCP 客户端验收发现并修复 P0 认证 bug——scripts/test_mcp_client.py（脚本化 MCP 客户端：mcp 库 stdio 拉起服务 → initialize → list_tools → 逐个调用 9 tool，走完整 JSON-RPC 出站链路；EXPECTED_TOOLS 名单核对；get_recent_activities 结果提取真实 activity_id 供 detail 族；输出仅安全摘要）首次真实调用即暴露：server.py build_htc_headers 此前只映射 HTC_COOKIE，从不读取 HTC_AUTHORIZATION/HTC_CLIENT_ID/HTC_VERSION → MCP 服务发出的请求从不带 Authorization，真实调用恒 401 "Invalid Credentials"（此前所有真实验证走 test_real_htc.py 自建 headers，完全掩盖该缺口；src/ 全仓 grep 证实）。修复：_ENV_TO_HEADER 四变量完整映射（与 test_real_htc.py 同一契约），必填缺失时 ValueError 指明变量名（清晰本地报错优于发出注定 401 的请求误导排查）；验收脚本同步修复 StdioServerParameters env=dict(os.environ)（MCP SDK 不传 env 时子进程只得到安全默认环境，HTC_* 不继承——此前与认证 bug 叠加无法区分）；tests/test_tools.py +autouse fixture _dummy_htc_env（假凭证环境，Mock 不联网，套件在有无真实凭证的终端行为一致）+3 认证头回归测试（四变量全映射/必填缺失报错含变量名/可选缺省省略）；无凭证本地验证：MCP 链路传出清晰 "Missing required environment variable(s)" 错误（替代误导性 401）；全量 194 passed；**用户真凭证复验 9/9 passed（2026-08-17）**——9 个 tool 全部经真实 MCP 客户端出站链路（JSON-RPC → 服务 → HTTPS → HTC）真实调用成功，detail 族使用真实 activity_id
+- 发布就绪评审轮（2026-08-17）：Final Release Readiness Review——9 tool 实现/README/真实验收/认证安全（对用户曾粘贴的 token 特征全仓扫描零匹配）/.gitignore/parser 容错/State 一致性全项核对；修复 2 项 P2（requirements.txt 显式声明 mcp>=1.29.0；State 6.9 契约段过时表述与 KI-6 矛盾）；判定 RELEASE / v1.0-ready（无 P0/P1）；230 passed
+- Phase 7：恢复状态数据域（睡眠 / 静息心率 / HRV）——用户浏览器勘探（data_temp/htc探查.txt，请求+响应双证据）确认三条新链路后实施：① GET /healthRecords（纳秒时间戳 + dataType=sleep + subDataType=sleep.fragment；value 数组 fieldName→longValue/integerValue 结构）→ get_sleep_records(days=14)（SleepRecord：上床/入睡/醒来时刻（ms）、light/deep/dream/awake/total 分钟、score/efficiency/latency/wakeup_count；deep_sleep_part/sleep_type 语义未公开原样保留；两条自洽恒等式已验证并固化为回归：分段和=总睡眠 199+165+106=470、入睡→醒来跨度=总睡眠+清醒 471=470+1、go_bed+latency=fall_asleep 8min）；② POST sampleSet/periodStatistics:calculate（startDay/endDay 数字写法、无 fieldNames、fieldName 服务端推断 restBpm）→ get_resting_heart_rate(days=28)（HealthMetricStats：overall avg/max/min/count + daily 升序去重）；③ POST healthRecords/periodStatistics:calculate（startDay/endDay 字符串写法、fieldNames=["avgHrv"]、dataType=sleep）→ get_hrv_stats(days=28)（avgHrv 原样返回，华为未声明单位/算法口径不换算）。实现：client.py +_get（GET 错误契约与 _post 一致）+_post 可选 url 参数 + query_sleep_records/query_health_record_stats/query_sample_set_stats（端点 URL 与数据类型常量集中管理；两 stats 端点 startDay 类型差异在 client 层隔离）；health_parser.py（复用 parser._ms_to_datetime/_ns_to_datetime 加固助手；容错哲学一致：缺失→None 畸形不崩）；models.py +SleepRecord/StatBlock/DailyStat/HealthMetricStats；server.py +HRV_FIELD_NAME/_local_midnight/_inclusive_day_window（含今天两端闭区间，证据：28 天窗口 count=28）/fetch_sleep_records（尾随窗口 [now-N天, now] 纳秒，证据：浏览器 1 天窗口=[capture-24h, capture] 不与任何时区自然日对齐，尾随窗口对自然日语义同样稳健）/fetch_resting_heart_rate/fetch_hrv_stats + 3 tool（days 1~730 复用 _validate_lookback_days）；test_real_htc.py +sleep/resting-hr/hrv 三模式（100% 复用 fetch 层；sleep 模式内置三条自洽恒等式运行时检查，MISMATCH 即契约漂移信号）；test_mcp_client.py EXPECTED_TOOLS 9→12（+恢复状态族默认参数调用）；README（工具表 12 行/结构图 health_parser/九模式/契约摘要 +恢复状态端点）；+14 测试（tests/test_health.py：client 请求契约 4——sleep GET 参数逐字/healthRecords stats 字符串日+fieldNames/sampleSet stats 数字日无 fieldNames/401 传播；parser 真实证据 5——睡眠记录全字段+三条恒等式/排序容错/缺失容错/RHR overall+daily 升序单值日不伪造/HRV 字符串日解析+同日去重+畸形容错；tool 4——三工具结构+窗口字段+days 校验参数化）；244 passed
 
 ## Code Status
 
 ```
 src/huawei_health_mcp/
 ├── __init__.py   包标识 0.1.0
-├── client.py     HTCClient：query_activity_records / query_activity_detail，只返回原始 JSON
-├── models.py     ActivityRecord / SamplePoint / ActivityDetail / DetailCollector / DetailSamplePoint / TrainingSummary 族
+├── client.py     HTCClient：query_activity_records / query_activity_detail / query_sleep_records(GET) / query_health_record_stats / query_sample_set_stats，只返回原始 JSON（_post 支持端点 url 参数，_get 与 _post 同错误契约）
+├── models.py     ActivityRecord / SamplePoint / ActivityDetail / TrainingSummary 族 / SleepRecord / StatBlock / DailyStat / HealthMetricStats
 ├── parser.py     parse_activity_record（ms 契约）/ parse_activity_detail（顶层 ms + collector/sample ns）
+├── health_parser.py   parse_sleep_records / parse_health_metric_stats（恢复状态域，复用 parser 加固时间助手）
 ├── analysis.py   summarize_activity_detail + compute_session_metrics（确定性聚合，双源，无 AI）
 ├── period_analysis.py   aggregate_activity_period：多 ActivityRecord → TrainingPeriodSummary
 ├── period_comparison.py   compare_training_periods：两个 TrainingPeriodSummary → TrainingPeriodComparison
 ├── trend_analysis.py   build_week_windows + aggregate_weekly_trend + compute_weekly_trend_delta：周趋势与环比（复用聚合层/比较层）
-└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail / get_training_summary / get_session_metrics / get_training_period_summary / get_training_period_comparison / get_training_weekly_trend / get_training_weekly_trend_delta
-scripts/test_real_htc.py   人工真实请求脚本（list / detail / period / comparison / trend / trend-delta 六模式，凭证只从环境变量）
-scripts/test_mcp_client.py 脚本化 MCP 客户端验收（stdio 拉起服务 → initialize → list_tools → 逐个真实调用 9 tool；env 显式传 os.environ）
-tests/   14 个测试文件 + 2 个 synthetic fixtures（无真实用户数据；真实 fixture 聚合/对比/趋势测试在无 data_temp 时自动 skip）
+└── server.py     FastMCP：health_check / get_recent_activities / get_activity_detail / get_training_summary / get_session_metrics / get_training_period_summary / get_training_period_comparison / get_training_weekly_trend / get_training_weekly_trend_delta / get_sleep_records / get_resting_heart_rate / get_hrv_stats
+scripts/test_real_htc.py   人工真实请求脚本（list / detail / period / comparison / trend / trend-delta / sleep / resting-hr / hrv 九模式，凭证只从环境变量）
+scripts/test_mcp_client.py 脚本化 MCP 客户端验收（stdio 拉起服务 → initialize → list_tools → 逐个真实调用 12 tool；env 显式传 os.environ）
+tests/   15 个测试文件 + 2 个 synthetic fixtures（无真实用户数据；真实 fixture 聚合/对比/趋势测试在无 data_temp 时自动 skip）
 ```
 
 ## Tests
 
-`python -m pytest`（项目根，.venv）→ **230 passed**（parser 11 + client 8 + tools 12 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2 + metrics 8 + period 27 + comparison 30 + trend 26 + trend delta 20 + real script 6 + robustness 36；真实 fixture 测试在无 data_temp 时自动 skip）
+`python -m pytest`（项目根，.venv）→ **244 passed**（parser 11 + client 8 + tools 12 + detail models 10 + detail parser 17 + detail tool 9 + analysis 8 + summary tool 2 + metrics 8 + period 27 + comparison 30 + trend 26 + trend delta 20 + real script 6 + robustness 36 + health 14；真实 fixture 测试在无 data_temp 时自动 skip）
 
 ## Architecture Decisions
 
@@ -191,6 +194,8 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 7. HR Zone / 配速区间标准未定（Manager 决策）；SessionMetrics 已提供双源基础数据，zone 计算的标准确定后可在 analysis.py 增量实现
 8. 观察项（审计轮记录，无 crash 风险、不修）：_duration_of 对 end<start 的负时长无防护（纯数学差契约，真实数据从未出现）；activityType=0 时 falsy fallback 到 type 键（0 值从未出现）；单条 distance≤0 仍进配速分子分母（总体 sum>0 已防除零）
 9. stride.statistics(avg) 单位未确认（cm? m?）——数据存在但不聚合；resting_calories.statistics 跨活动语义不明——不聚合；steps.total 内嵌 duration 单位未知——不解析
+10. Phase 7 观察项：deep_sleep_part（89）/ sleep_type（1）语义未公开——原样保留不解释；avgHrv 单位与算法口径（RMSSD/SDNN?）华为未声明——原样返回不换算；sleep 尾随窗口的服务端纳入规则（按记录 startTime 还是窗口相交）无公开契约——本地不过滤原样返回；睡眠 fragment（subData.samplePoints 分段细节）v1 不解析（summary 分段已满足）
+11. athleticPerformance/latest（跑力 41.9 / fitness / fatigue / condition / 预测成绩 km1~马拉松）与 sportReports（PB）端点已勘探留档（data_temp/htc探查.txt）但未实现——属训练能力域，Manager 决定是否开 Phase 8
 
 ## Risks
 
@@ -199,10 +204,10 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Next Action
 
-1) 【需 Manager 决策】activityType→运动名映射（真实数据已出现 13/56/90/127/161 五种，等待用户对照 App 确认）；HR/配速 Zone 标准；周期对比/环比是否增加活跃时间与配速指标（6.13 已备好聚合基础，compare_metric/transition 指标清单未动）；stride 单位确认 2) 【需用户/真实数据】>107 条归窗规模的 limit 截断行为验证（数据积累后） 3) 【可自主】多趋势指标叠加（如月度滚动窗口）若 Manager 需要再扩展；comparison 支持任意错位窗口（如 vs 上上月）若 Manager 需要再扩展。
+1) 【需用户真实验收】Phase 7 三 tool 真实链路验证：test_real_htc.py sleep / resting-hr / hrv 三模式 + test_mcp_client.py（预期 12/12）2) 【需 Manager 决策】activityType→运动名映射（13/56/90/127/161）；HR/配速 Zone 标准；周期对比/环比是否加活跃时间与配速指标；stride 单位；是否开 Phase 8（athleticPerformance 训练能力域，勘探证据已留档）3) 【需用户/真实数据】>107 条归窗规模的 limit 截断行为验证（数据积累后）。
 
-**项目当前处于稳定态**：9 个 MCP tool 全部通过真实 MCP 客户端出站链路验收（2026-08-17，9/9 passed，含真实 activity_id 的 detail 族真实调用）；无阻塞性工程事项，后续推进以 Manager 业务裁决（映射/Zone/指标取舍）为主导。
+**项目状态**：12 个 MCP tool（9 个已通过真实 MCP 客户端出站链路验收 9/9，2026-08-17；3 个恢复状态 tool Mock 全绿待真实验收）。
 
 ## Last Updated
 
-2026-08-17（审计加固轮完成时）
+2026-08-17（Phase 7 代码完成时）

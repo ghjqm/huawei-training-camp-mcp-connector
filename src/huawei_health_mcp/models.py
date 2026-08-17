@@ -379,3 +379,79 @@ class TrainingTrendDelta(BaseModel):
     anchor: datetime
     window_days: int = 7
     transitions: list[WeekDeltaTransition] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7：恢复状态数据域（睡眠 / 静息心率 / HRV）
+# 单位契约（真实数据自洽验证，见 data_temp/htc探查.txt 勘探证据）：
+# - 睡眠分段时间：分钟（light 199 + deep 165 + dream 106 = all 470 自洽）
+# - restBpm：bpm；avgHrv：原样返回（典型 R-R 间期毫秒量级，华为未
+#   在响应中声明单位，不擅自换算）
+# - sleep_efficiency：百分比整数（98 = 98%）
+# ---------------------------------------------------------------------------
+
+
+class SleepRecord(BaseModel):
+    """标准化后的单晚睡眠记录。
+
+    由 health_parser.parse_sleep_records() 从 GET /healthRecords 原始
+    JSON 转换得到。缺失字段为 None。时间契约：
+    - start_time / end_time：纳秒时间戳（记录顶层，parser 转换）
+    - go_bed / fall_asleep / wakeup：毫秒时间戳（value 字段）
+    """
+
+    record_id: Optional[str] = None
+    start_time: Optional[datetime] = None  # 记录顶层 startTime（纳秒）
+    end_time: Optional[datetime] = None    # 记录顶层 endTime（纳秒）
+    go_bed_time: Optional[datetime] = None      # 上床时间（毫秒）
+    fall_asleep_time: Optional[datetime] = None  # 入睡时间（毫秒）
+    wakeup_time: Optional[datetime] = None       # 醒来时间（毫秒）
+
+    light_sleep_minutes: Optional[int] = None    # 浅睡
+    deep_sleep_minutes: Optional[int] = None     # 深睡
+    dream_sleep_minutes: Optional[int] = None    # 快速眼动（dream_time）
+    awake_minutes: Optional[int] = None          # 清醒时长
+    total_sleep_minutes: Optional[int] = None    # all_sleep_time 总睡眠
+
+    sleep_score: Optional[int] = None             # 睡眠得分
+    sleep_efficiency_percent: Optional[int] = None  # 睡眠效率（%）
+    sleep_latency_minutes: Optional[int] = None   # 入睡用时
+    wakeup_count: Optional[int] = None            # 夜醒次数
+    deep_sleep_part: Optional[int] = None  # 语义未确认（deep_sleep_part 原样保留）
+    sleep_type: Optional[int] = None      # 语义未确认（sleep_type 原样保留）
+
+
+class StatBlock(BaseModel):
+    """periodStatistics 端点的通用统计块（服务端口径原样）。"""
+
+    avg: Optional[float] = None
+    max: Optional[float] = None
+    min: Optional[float] = None
+    count: Optional[int] = None
+
+
+class DailyStat(BaseModel):
+    """单个自然日的统计（来自 groupResults.groupStatistics）。
+
+    day 为 "YYYY-MM-DD" 字符串（自然日语义由服务端按账号时区解释，
+    本地不重新定义边界）。
+    """
+
+    day: str
+    stats: StatBlock
+
+
+class HealthMetricStats(BaseModel):
+    """恢复状态指标统计容器（Phase 7，服务端聚合，无本地计算）。
+
+    overall 来自响应 results（整个窗口汇总），daily 来自 groupResults
+    （按天分组，时间升序）。全部为服务端口径，本层不做任何换算。
+    """
+
+    data_type: str
+    field_name: Optional[str] = None  # 服务端返回的 fieldName（如 restBpm / avgHrv）
+    days: int
+    start_day: str  # "YYYY-MM-DD"（请求窗口起点，含）
+    end_day: str    # "YYYY-MM-DD"（请求窗口终点，含）
+    overall: StatBlock = Field(default_factory=StatBlock)
+    daily: list[DailyStat] = Field(default_factory=list)
