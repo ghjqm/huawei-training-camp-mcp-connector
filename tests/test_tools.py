@@ -10,12 +10,25 @@ import json
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from src.huawei_health_mcp.client import HTCClient, HTCClientError
 from src.huawei_health_mcp.server import (
     get_recent_activities,
     health_check,
 )
+
+
+@pytest.fixture(autouse=True)
+def _dummy_htc_env(monkeypatch):
+    """为所有测试提供假认证环境变量（请求全部走 Mock，绝不联网）。
+
+    Phase 6.14 起 create_htc_client 对缺失的必填凭证 fail-fast，
+    参数校验类测试需要环境变量存在才能走到被测逻辑；
+    同时保证套件在有真实凭证的宿主终端里行为一致。
+    """
+    monkeypatch.setenv("HTC_AUTHORIZATION", "Bearer dummy-for-tests")
+    monkeypatch.setenv("HTC_CLIENT_ID", "dummy-for-tests")
 
 
 def _make_mock_client(handler) -> HTCClient:
@@ -165,3 +178,67 @@ def test_limit_upper_bound_accepted():
     """合法边界值 limit=100 正常执行（不发请求错误）。"""
     payload = _capture_list_payload(lambda: get_recent_activities(limit=100))
     assert payload["limit"] == 100
+
+
+# ---------------- 认证头构造（Phase 6.14 修复回归） ----------------
+
+_ALL_ENV_VARS = (
+    "HTC_AUTHORIZATION",
+    "HTC_CLIENT_ID",
+    "HTC_VERSION",
+    "HTC_COOKIE",
+)
+
+
+def test_build_htc_headers_maps_all_four_vars(monkeypatch):
+    """四个环境变量齐全时，全部映射为对应 HTTP 请求头。"""
+    from src.huawei_health_mcp.server import build_htc_headers
+
+    for name in _ALL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTC_AUTHORIZATION", "Bearer test-auth")
+    monkeypatch.setenv("HTC_CLIENT_ID", "test-client-id")
+    monkeypatch.setenv("HTC_VERSION", "HealthKitRunningGroupPortal_6.26.4.200")
+    monkeypatch.setenv("HTC_COOKIE", "test-cookie")
+
+    headers = build_htc_headers()
+
+    assert headers == {
+        "Authorization": "Bearer test-auth",
+        "x-client-id": "test-client-id",
+        "x-version": "HealthKitRunningGroupPortal_6.26.4.200",
+        "Cookie": "test-cookie",
+    }
+
+
+def test_build_htc_headers_required_missing_raises(monkeypatch):
+    """必填变量缺失时清晰报错（指明变量名），而不是发出注定 401 的请求。"""
+    import pytest
+
+    from src.huawei_health_mcp.server import build_htc_headers
+
+    for name in _ALL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_htc_headers()
+    message = str(exc_info.value)
+    assert "HTC_AUTHORIZATION" in message
+    assert "HTC_CLIENT_ID" in message
+
+
+def test_build_htc_headers_optional_omitted(monkeypatch):
+    """可选变量（HTC_VERSION / HTC_COOKIE）缺失时对应 Header 省略。"""
+    from src.huawei_health_mcp.server import build_htc_headers
+
+    for name in _ALL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTC_AUTHORIZATION", "Bearer test-auth")
+    monkeypatch.setenv("HTC_CLIENT_ID", "test-client-id")
+
+    headers = build_htc_headers()
+
+    assert headers == {
+        "Authorization": "Bearer test-auth",
+        "x-client-id": "test-client-id",
+    }

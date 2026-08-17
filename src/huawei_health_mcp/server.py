@@ -7,7 +7,7 @@
 
 设计原则：
 - 复用现有 client.py / parser.py，不重复实现 HTTP 或解析逻辑。
-- 认证信息（Cookie）只从环境变量读取，绝不写进代码 / 日志 / 测试。
+- 认证信息（Authorization / x-client-id 等）只从环境变量读取，绝不写进代码 / 日志 / 测试。
 - 不实现登录、不猜测认证机制、不绕过任何访问控制。
 - 不连接数据库、不做 AI 分析、不做 Dashboard。
 """
@@ -74,17 +74,41 @@ DEFAULT_DETAIL_DATA_TYPES = [
 ]
 
 
+# 环境变量 -> HTTP 请求头 映射（与 scripts/test_real_htc.py 同一契约，
+# 键名来自用户确认的浏览器成功请求）
+_ENV_TO_HEADER = {
+    "HTC_AUTHORIZATION": "Authorization",
+    "HTC_CLIENT_ID": "x-client-id",
+    "HTC_VERSION": "x-version",
+    "HTC_COOKIE": "Cookie",
+}
+
+# 缺失即拒绝构造 headers 的必填变量（Phase 6.14 修复：此前只映射了
+# HTC_COOKIE，导致 MCP 服务发出的请求不带 Authorization，真实调用
+# 恒 401 "Invalid Credentials"，且误导排查方向）
+_REQUIRED_ENV = ("HTC_AUTHORIZATION", "HTC_CLIENT_ID")
+
+
 def build_htc_headers() -> dict[str, str]:
     """从环境变量构造请求 headers。
 
-    只读取调用方显式提供的 HTC_COOKIE；不猜测任何认证字段，
-    也不写入任何真实认证信息。若未设置环境变量，返回空 headers
-    （此时真实请求会因缺少认证而失败，由上层清晰报错）。
+    HTC_AUTHORIZATION / HTC_CLIENT_ID 必填：缺失时抛 ValueError 并
+    指明缺失变量名（清晰本地报错，优于发出注定 401 的请求）；
+    HTC_VERSION / HTC_COOKIE 可选：缺失时对应 Header 省略。
+    不猜测任何认证机制，不写入任何真实认证信息。
     """
+    missing = [name for name in _REQUIRED_ENV if not os.environ.get(name)]
+    if missing:
+        raise ValueError(
+            "Missing required environment variable(s): " + ", ".join(missing)
+            + ". Set them from your own logged-in browser session"
+            + " (see README '环境变量' section)."
+        )
     headers: dict[str, str] = {}
-    cookie = os.environ.get("HTC_COOKIE")
-    if cookie:
-        headers["Cookie"] = cookie
+    for env_name, header_name in _ENV_TO_HEADER.items():
+        value = os.environ.get(env_name)
+        if value:
+            headers[header_name] = value
     return headers
 
 
@@ -407,8 +431,9 @@ def get_recent_activities(
         缺失字段为 None 或空列表。
 
     说明：
-        认证所需的 Cookie 从环境变量 HTC_COOKIE 读取；
-        本项目不实现登录，也不猜测或绕过任何认证机制。
+        认证所需的请求头（Authorization / x-client-id 等）从环境变量
+        读取（见 build_htc_headers）；本项目不实现登录，
+        也不猜测或绕过任何认证机制。
     """
     _validate_limit(limit)
     client = create_htc_client()
