@@ -12,6 +12,8 @@ pytest 中的全部测试（tests/）仍然使用 MockTransport，不访问真�
     python scripts/test_real_htc.py sleep [N]        # 睡眠模式：最近 N 天睡眠记录 + 自洽恒等式检查（默认 14）
     python scripts/test_real_htc.py resting-hr [N]   # 静息心率模式：最近 N 天 restBpm 统计（默认 28）
     python scripts/test_real_htc.py hrv [N]          # HRV 模式：最近 N 天 avgHrv 统计（默认 28）
+    python scripts/test_real_htc.py performance      # 能力模式：最新运动能力评估（跑力/状态/疲劳/预测成绩）
+    python scripts/test_real_htc.py pb [type]        # PB 模式：单运动类型个人纪录（默认 running）
 
 前置条件（环境变量 -> HTTP 请求头，映射来自用户确认的浏览器成功请求）：
     HTC_AUTHORIZATION -> Authorization: Bearer <敏感值>
@@ -54,11 +56,13 @@ if str(PROJECT_ROOT) not in sys.path:
 # - server.py：时间范围与列表抽取辅助（与 get_recent_activities 同一逻辑）
 from src.huawei_health_mcp.client import (  # noqa: E402
     ACTIVITY_RECORD_QUERY_URL,
+    ATHLETIC_PERFORMANCE_URL,
     HEALTH_RECORDS_URL,
     HEALTH_RECORD_STATS_URL,
     HTCClient,
     HTCClientError,
     SAMPLE_SET_STATS_URL,
+    SPORT_REPORTS_URL,
 )
 from src.huawei_health_mcp.parser import parse_activity_record  # noqa: E402
 from src.huawei_health_mcp.period_analysis import (  # noqa: E402
@@ -67,8 +71,10 @@ from src.huawei_health_mcp.period_analysis import (  # noqa: E402
 from src.huawei_health_mcp.server import (  # noqa: E402
     _default_time_range,
     _extract_activity_list,
+    fetch_athletic_performance,
     fetch_hrv_stats,
     fetch_period_comparison,
+    fetch_personal_bests,
     fetch_resting_heart_rate,
     fetch_sleep_records,
     fetch_weekly_trend,
@@ -664,6 +670,69 @@ def run_hrv_mode(headers: dict[str, str], argv: list[str]) -> int:
     )
 
 
+def run_performance_mode(headers: dict[str, str]) -> int:
+    """能力模式：最新运动能力评估真实链路验证（Phase 8）。
+
+    100% 复用 fetch_athletic_performance（GET athleticPerformance/latest
+    + parser），打印五项指数与全部预测成绩（服务端口径，本地不换算）。
+    """
+    client = HTCClient(headers=headers)
+    try:
+        perf = fetch_athletic_performance(client)
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {ATHLETIC_PERFORMANCE_URL}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC API request: SUCCESS (athleticPerformance/latest, HTTP 2xx)")
+    print(f"running_ability={perf.running_ability} condition={perf.condition} "
+          f"fitness={perf.fitness} fatigue={perf.fatigue} ranking={perf.ranking}")
+    print(f"predicted_times entries={len(perf.predicted_times)}")
+    for name, seconds in sorted(perf.predicted_times.items()):
+        print(f"  {name}: {seconds:.0f}s ({seconds / 60:.1f}min)")
+    if perf.running_ability is None and not perf.predicted_times:
+        print("(no data in response — metric may be missing for this account)")
+    return 0
+
+
+def run_pb_mode(headers: dict[str, str], argv: list[str]) -> int:
+    """PB 模式：单运动类型个人纪录真实链路验证（Phase 8，默认 running）。
+
+    100% 复用 fetch_personal_bests（GET sportReports + parser），
+    逐条打印 name/value 与达成时间段（本地时间）；value 单位由
+    华为定义（时间为秒、距离为米），脚本不换算不命名。
+    """
+    activity_type = argv[2] if len(argv) > 2 else "running"
+    if not activity_type.strip():
+        print("Invalid activity_type: empty string")
+        return 1
+
+    client = HTCClient(headers=headers)
+    try:
+        bests = fetch_personal_bests(client, activity_type=activity_type)
+    except HTCClientError as exc:
+        print("HTC API request: FAILED")
+        print(f"URL: {SPORT_REPORTS_URL}")
+        print(f"Error: {exc}")
+        return 1
+    finally:
+        client.close()
+
+    print("HTC API request: SUCCESS (sportReports, HTTP 2xx)")
+    print(f"activity_type={bests.activity_type} personal_bests={len(bests.personal_bests)}")
+    for b in bests.personal_bests:
+        start = _fmt_local(b.start_time) if b.start_time else "N/A"
+        end = _fmt_local(b.end_time) if b.end_time else "N/A"
+        print(f"  {b.name}: value={b.value} achieved=[{start} .. {end}]")
+    if not bests.personal_bests:
+        print(f"(no personalBest entries for activityType={activity_type!r} "
+              "— try another type or check account data)")
+    return 0
+
+
 def main() -> int:
     headers = build_headers()
     if headers is None:
@@ -687,6 +756,10 @@ def main() -> int:
         return run_resting_hr_mode(headers, argv)
     if mode == "hrv":
         return run_hrv_mode(headers, argv)
+    if mode == "performance":
+        return run_performance_mode(headers)
+    if mode == "pb":
+        return run_pb_mode(headers, argv)
     return run_list_mode(headers)
 
 

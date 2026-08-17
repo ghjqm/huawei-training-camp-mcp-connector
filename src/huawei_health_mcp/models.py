@@ -455,3 +455,50 @@ class HealthMetricStats(BaseModel):
     end_day: str    # "YYYY-MM-DD"（请求窗口终点，含）
     overall: StatBlock = Field(default_factory=StatBlock)
     daily: list[DailyStat] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8：训练能力域（运动能力评估 / PB 个人纪录）
+# 单位契约（真实数据自洽验证，见 data_temp/htc探查.txt 勘探证据）：
+# - predictedTimes：秒（halfMarathon 6701s=1:51:41 / marathon
+#   14028s=3:53:48，业余跑者量级自洽）
+# - PB value 与 name 耦合：*Time* 后缀 → 秒（bestRunPartTimeHM
+#   7303.189s≈2:01:43 / 10KM 2746s=45:46），*Distance* 后缀 → 米
+#   （bestRunDistance 26220m）——名称语义由华为定义，原样保留
+# - runningAbility / condition / fitness / fatigue / ranking：华为
+#   指数口径，无量纲，原样返回
+# ---------------------------------------------------------------------------
+
+
+class AthleticPerformance(BaseModel):
+    """最新运动能力评估（服务端口径，无本地计算）。
+
+    - 五项指数缺失为 None（不伪造 0）；condition 有正负
+      （正=状态好，负=疲劳累积，量纲华为未公开）
+    - predicted_times 键集合原样保留（证据：km1/km3/km5/km10/
+      halfMarathon/marathon，秒）；不硬编码键清单，服务端增减
+      距离项时自动透传
+    """
+
+    running_ability: Optional[float] = None
+    condition: Optional[float] = None
+    fitness: Optional[float] = None
+    fatigue: Optional[float] = None
+    ranking: Optional[float] = None
+    predicted_times: dict[str, float] = Field(default_factory=dict)
+
+
+class PersonalBestEntry(BaseModel):
+    """单条个人纪录（name 语义由华为定义，原样保留）。"""
+
+    name: str
+    value: Optional[float] = None    # 单位与 name 耦合（见模块注释）
+    start_time: Optional[datetime] = None  # 达成时段开始（ms）
+    end_time: Optional[datetime] = None    # 达成时段结束（ms）
+
+
+class SportPersonalBests(BaseModel):
+    """单运动类型的 PB 容器（personalBest 数组原样逐条解析）。"""
+
+    activity_type: str
+    personal_bests: list[PersonalBestEntry] = Field(default_factory=list)

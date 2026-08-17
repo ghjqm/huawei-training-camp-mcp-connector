@@ -31,11 +31,14 @@ from .client import (
     HTCClientError,
 )
 from .health_parser import parse_health_metric_stats, parse_sleep_records
+from .performance_parser import parse_athletic_performance, parse_personal_bests
 from .models import (
     ActivityDetail,
     ActivityRecord,
+    AthleticPerformance,
     HealthMetricStats,
     SleepRecord,
+    SportPersonalBests,
     TrainingPeriodComparison,
     TrainingSummary,
     TrainingTrendDelta,
@@ -941,6 +944,96 @@ def get_resting_heart_rate(days: int = DEFAULT_RECOVERY_DAYS) -> dict:
     finally:
         client.close()
     return stats.model_dump(mode="json")
+
+
+def fetch_athletic_performance(client: HTCClient) -> AthleticPerformance:
+    """查询最新运动能力评估（Phase 8，GET athleticPerformance/latest）。
+
+    timeZone 参数从本地系统推导（与浏览器 "+0800" 同格式）。
+    五项指数与预测成绩全部为服务端口径，本地不换算。
+    """
+    raw = client.query_athletic_performance(timezone=_local_tz_offset())
+    return parse_athletic_performance(raw)
+
+
+def fetch_personal_bests(
+    client: HTCClient, activity_type: str = "running"
+) -> SportPersonalBests:
+    """查询单运动类型 PB（Phase 8，GET sportReports）。
+
+    activity_type 证据值 "running"（其他取值未经验证）。
+    解析取 sportReports[] 中 activityType 匹配的第一个条目，
+    personalBest 数组原样逐条解析。
+    """
+    raw = client.query_sport_reports(activity_type=activity_type)
+    return parse_personal_bests(raw, activity_type=activity_type)
+
+
+@mcp.tool()
+def get_athletic_performance() -> dict:
+    """获取最新运动能力评估（服务端口径，无本地计算）。
+
+    通过 HTC athleticPerformance/latest 接口查询：跑力指数
+    （runningAbility）、状态（condition，正=状态好负=疲劳累积）、
+    健康（fitness）、疲劳（fatigue）、排名（ranking，百分位口径）
+    与各距离预测成绩（predictedTimes，秒）。
+
+    返回：
+        - running_ability / condition / fitness / fatigue / ranking：
+          华为指数口径（无量纲），缺失为 None
+        - predicted_times：{距离键: 秒}，键集合原样保留
+          （km1 / km3 / km5 / km10 / halfMarathon / marathon）
+
+    语义说明：
+        五项指数与预测成绩全部为华为模型服务端口径，本地不做
+        任何换算或重新计算；各指数量纲华为未公开文档，原样返回。
+
+    说明：
+        认证信息从环境变量读取；本项目不实现登录，
+        也不猜测或绕过任何认证机制。
+    """
+    client = create_htc_client()
+    try:
+        performance = fetch_athletic_performance(client)
+    finally:
+        client.close()
+    return performance.model_dump(mode="json")
+
+
+@mcp.tool()
+def get_personal_bests(activity_type: str = "running") -> dict:
+    """获取个人纪录（PB，服务端口径，无本地计算）。
+
+    通过 HTC sportReports 接口查询指定运动类型的个人纪录列表
+    （最远距离、最好分段成绩等）。
+
+    参数：
+        activity_type: 运动类型标识（默认 "running"；该值经真实
+            请求验证，其他取值未验证）。
+
+    返回：
+        - activity_type：请求的运动类型
+        - personal_bests：列表，每条含 name（纪录名，语义由华为
+          定义，如 bestRunDistance / bestRunPartTime10KM，原样
+          保留）、value（单位与 name 耦合：*Time* → 秒，
+          *Distance* → 米）、start_time / end_time（达成时段）
+          无纪录时为空列表；缺失字段为 None。
+
+    说明：
+        认证信息从环境变量读取；本项目不实现登录，
+        也不猜测或绕过任何认证机制。
+    """
+    if not isinstance(activity_type, str) or not activity_type.strip():
+        raise ValueError(
+            "activity_type must be a non-empty string (e.g. 'running')"
+        )
+    activity_type = activity_type.strip()
+    client = create_htc_client()
+    try:
+        bests = fetch_personal_bests(client, activity_type=activity_type)
+    finally:
+        client.close()
+    return bests.model_dump(mode="json")
 
 
 @mcp.tool()

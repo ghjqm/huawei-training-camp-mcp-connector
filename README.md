@@ -23,6 +23,8 @@ Huawei Training Camp / Huawei Health 网页端的运动训练数据。
 | `get_sleep_records(days=14)` | 最近 N 天睡眠记录（每晚：上床/入睡/醒来时刻，浅睡/深睡/快速眼动/清醒分段分钟，总睡眠、得分、效率、入睡用时、夜醒次数；服务端解析口径，无本地推断） |
 | `get_resting_heart_rate(days=28)` | 最近 N 天静息心率统计（服务端聚合：全窗口 avg/max/min/count + 按天明细；fieldName=restBpm，bpm） |
 | `get_hrv_stats(days=28)` | 最近 N 天 HRV 统计（服务端聚合：全窗口 + 按天明细；fieldName=avgHrv，数值原样返回——华为未声明单位与算法口径，不擅自换算） |
+| `get_athletic_performance()` | 最新运动能力评估（跑力指数 runningAbility / 状态 condition / 健康 fitness / 疲劳 fatigue / 排名 ranking + 1/3/5/10 公里·半马·全马预测成绩秒数；服务端口径，无本地换算） |
+| `get_personal_bests(activity_type='running')` | 单运动类型个人纪录（name/value/达成起止时间；value 单位由华为定义——时间为秒、距离为米，原样返回不命名） |
 
 - `lookback_days`：查询窗口天数，默认 30，范围 1~730；查更早的训练时调大。
 - `weeks`（周趋势）：周窗口数，默认 4，范围 1~104（总跨度 ≤728 天 ≤730 上限）；
@@ -61,7 +63,7 @@ $env:HTC_CLIENT_ID     = "<你的 x-client-id 值>"
 $env:HTC_VERSION = "HealthKitRunningGroupPortal_6.26.4.200"   # x-version 头
 $env:HTC_COOKIE  = "<浏览器请求头里 Cookie 的完整值>"          # Cookie 头
 
-# 3. （可选）真实 API 连通性自检（九种模式，任选）
+# 3. （可选）真实 API 连通性自检（十一种模式，任选）
 .\.venv\Scripts\python.exe scripts\test_real_htc.py                    # list：最近训练列表
 .\.venv\Scripts\python.exe scripts\test_real_htc.py detail             # detail：单次训练采样详情
 .\.venv\Scripts\python.exe scripts\test_real_htc.py period             # period：周期聚合
@@ -71,6 +73,8 @@ $env:HTC_COOKIE  = "<浏览器请求头里 Cookie 的完整值>"          # Cook
 .\.venv\Scripts\python.exe scripts\test_real_htc.py sleep 14           # sleep：睡眠记录 + 自洽检查
 .\.venv\Scripts\python.exe scripts\test_real_htc.py resting-hr 28      # resting-hr：静息心率统计
 .\.venv\Scripts\python.exe scripts\test_real_htc.py hrv 28             # hrv：HRV 统计
+.\.venv\Scripts\python.exe scripts\test_real_htc.py performance        # performance：运动能力评估
+.\.venv\Scripts\python.exe scripts\test_real_htc.py pb                 # pb：个人纪录（默认 running）
 
 # 4. 启动 MCP 服务（stdio）
 .\.venv\Scripts\python.exe -m src.huawei_health_mcp.server
@@ -97,11 +101,11 @@ $env:HTC_CLIENT_ID ?? "<未设置>"
 Remove-Item Env:HTC_AUTHORIZATION, Env:HTC_CLIENT_ID -ErrorAction SilentlyContinue
 
 # ---------- 快速健康检查 ----------
-.\.venv\Scripts\python.exe -m pytest -q                     # 全量单元测试（无需凭证，预期 244 passed）
+.\.venv\Scripts\python.exe -m pytest -q                     # 全量单元测试（无需凭证，预期 254 passed）
 .\.venv\Scripts\python.exe scripts\test_real_htc.py         # 最快连通性检查（list 模式，5 条记录）
 
 # ---------- 常用验收组合 ----------
-.\.venv\Scripts\python.exe scripts\test_mcp_client.py       # MCP 客户端全工具验收（预期 12/12 passed）
+.\.venv\Scripts\python.exe scripts\test_mcp_client.py       # MCP 客户端全工具验收（预期 14/14 passed）
 .\.venv\Scripts\python.exe scripts\test_real_htc.py sleep 7         # 昨晚睡眠（含自洽恒等式检查）
 .\.venv\Scripts\python.exe scripts\test_real_htc.py resting-hr 7    # 最近一周静息心率
 .\.venv\Scripts\python.exe scripts\test_real_htc.py hrv 7           # 最近一周 HRV
@@ -156,8 +160,8 @@ src/huawei_health_mcp/
 ├─ period_comparison.py  # 周期对比（两个 TrainingPeriodSummary → TrainingPeriodComparison）
 ├─ trend_analysis.py     # 滚动周趋势与相邻周环比（复用聚合层与对比层）
 └─ server.py             # FastMCP 服务与工具接线
-scripts/test_real_htc.py   # 人工真实请求脚本（list / detail / period / comparison / trend / trend-delta / sleep / resting-hr / hrv 九模式，需要环境变量凭证）
-scripts/test_mcp_client.py # 真实 MCP 客户端验收（12 个 tool 全调用，需要环境变量凭证）
+scripts/test_real_htc.py   # 人工真实请求脚本（list / detail / period / comparison / trend / trend-delta / sleep / resting-hr / hrv / performance / pb 十一模式，需要环境变量凭证）
+scripts/test_mcp_client.py # 真实 MCP 客户端验收（14 个 tool 全调用，需要环境变量凭证）
 tests/                     # 单元测试（synthetic fixture，无真实用户数据）
 PROJECT_STATE.md           # 项目长期状态账本（新贡献者/Agent 从这里恢复上下文）
 ```
@@ -174,6 +178,9 @@ PROJECT_STATE.md           # 项目长期状态账本（新贡献者/Agent 从�
 - 恢复状态端点（Phase 7 勘探确认）：`GET /healthRecords` 时间戳为纳秒；
   `healthRecords` 统计的 startDay/endDay 为字符串、`sampleSet` 统计为数字
   （两端口径不混用）；睡眠分段为分钟（light+deep+dream=all 自洽）
+- 训练能力端点（Phase 8 勘探确认）：`GET /athleticPerformance/latest` 直接收
+  五项指数与 predictedTimes（秒）；`GET /sportReports` PB 的 startTime/endTime
+  为毫秒，value 单位由华为定义（时间为秒、距离为米）
 
 ## 许可证
 

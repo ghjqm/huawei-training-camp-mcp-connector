@@ -2,7 +2,7 @@
 
 以真实 MCP 客户端身份（mcp 库，与服务端同源协议）拉起本项目的
 FastMCP 服务，走完整 JSON-RPC 出站链路：initialize → list_tools →
-逐个调用全部 12 个 tool。这是「真实 MCP 客户端验收」的脚本化路径；
+逐个调用全部 14 个 tool。这是「真实 MCP 客户端验收」的脚本化路径；
 等价的人工路径是按 README 接入 Claude Desktop / Cherry Studio 等。
 
 运行方式（项目根目录，凭证环境变量需已设置，与 test_real_htc.py 相同）：
@@ -25,7 +25,7 @@ from mcp.client.stdio import stdio_client
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# 与 server.py 注册的工具一一对应（12 个）
+# 与 server.py 注册的工具一一对应（14 个）
 EXPECTED_TOOLS = [
     "health_check",
     "get_recent_activities",
@@ -39,6 +39,8 @@ EXPECTED_TOOLS = [
     "get_sleep_records",
     "get_resting_heart_rate",
     "get_hrv_stats",
+    "get_athletic_performance",
+    "get_personal_bests",
 ]
 
 REQUIRED_ENV = ("HTC_AUTHORIZATION", "HTC_CLIENT_ID")
@@ -160,6 +162,12 @@ async def main() -> int:
             ):
                 ok, _, brief = await call(session, name, args)
                 results.append((name, ok, brief))
+
+            # 13-14) 训练能力域（Phase 8：运动能力评估 / PB 个人纪录）
+            ok, _, brief = await call(session, "get_athletic_performance", {})
+            results.append(("get_athletic_performance", ok, brief))
+            ok, _, brief = await call(session, "get_personal_bests", {"activity_type": "running"})
+            results.append(("get_personal_bests", ok, brief))
 
     print("=== ACCEPTANCE SUMMARY ===")
     passed = sum(1 for _, ok, _ in results if ok)

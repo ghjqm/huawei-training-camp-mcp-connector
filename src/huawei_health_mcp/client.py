@@ -27,6 +27,10 @@ HEALTH_RECORDS_URL = f"{_BASE_URL}/healthRecords"
 HEALTH_RECORD_STATS_URL = f"{_BASE_URL}/healthRecords/periodStatistics:calculate"
 SAMPLE_SET_STATS_URL = f"{_BASE_URL}/sampleSet/periodStatistics:calculate"
 
+# Phase 8 训练能力域端点（同批勘探证据确认，纯 GET）
+ATHLETIC_PERFORMANCE_URL = f"{_BASE_URL}/athleticPerformance/latest"
+SPORT_REPORTS_URL = f"{_BASE_URL}/sportReports"
+
 # 数据类型常量（与浏览器成功请求逐字一致）
 SLEEP_RECORD_DATA_TYPE = "com.huawei.health.record.sleep"
 SLEEP_FRAGMENT_SUB_DATA_TYPE = "com.huawei.continuous.sleep.fragment"
@@ -296,6 +300,39 @@ class HTCClient:
         return self._post(
             {"reqs": [req], "groupReqs": [dict(req)]},
             url=SAMPLE_SET_STATS_URL,
+        )
+
+    def query_athletic_performance(
+        self,
+        timezone: str,
+    ) -> dict[str, Any] | list[Any]:
+        """查询最新运动能力评估（Phase 8，GET athleticPerformance/latest）。
+
+        浏览器勘探证据契约：
+        - query 参数仅 timeZone（如 "+0800"）
+        - 响应含 runningAbility / condition / fitness / fatigue /
+          ranking / predictedTimes（km1..marathon，秒）
+        返回原始 JSON dict，不解析。
+        """
+        return self._get(
+            ATHLETIC_PERFORMANCE_URL, params={"timeZone": timezone}
+        )
+
+    def query_sport_reports(
+        self,
+        activity_type: str = "running",
+    ) -> dict[str, Any] | list[Any]:
+        """查询运动报表（PB 个人纪录）（Phase 8，GET sportReports）。
+
+        浏览器勘探证据契约：
+        - query 参数仅 activityType（证据值 "running"；其他取值
+          未经验证）
+        - 响应含 sportReports[].personalBest[]，每条
+          {name, value, startTime(ms), endTime(ms)}
+        返回原始 JSON dict，不解析。
+        """
+        return self._get(
+            SPORT_REPORTS_URL, params={"activityType": activity_type}
         )
 
     def close(self) -> None:
