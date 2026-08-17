@@ -11,6 +11,7 @@ models.ActivityDetail。
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
@@ -34,24 +35,39 @@ _MILLISECONDS_PER_SECOND = 1_000
 
 
 def _ms_to_datetime(ms: Optional[int]) -> Optional[datetime]:
-    """毫秒级 Unix 时间戳 → 带 UTC 时区的 datetime（ActivityRecord 契约）。"""
+    """毫秒级 Unix 时间戳 → 带 UTC 时区的 datetime（ActivityRecord 契约）。
+
+    审计修复（健壮性压力测试证实）：类型异常（字符串/dict/float）或
+    超出 datetime 表示范围的值（负值/过大，fromtimestamp 会抛
+    OverflowError/OSError/ValueError）一律返回 None——单条毒时间戳
+    不得让整批列表解析崩溃。
+    """
     if ms is None:
         return None
-    seconds = ms // _MILLISECONDS_PER_SECOND
-    micros = (ms % _MILLISECONDS_PER_SECOND) * 1000
-    return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=micros)
+    try:
+        ms_int = int(ms)
+        seconds = ms_int // _MILLISECONDS_PER_SECOND
+        micros = (ms_int % _MILLISECONDS_PER_SECOND) * 1000
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=micros)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _ns_to_datetime(ns: Optional[int]) -> Optional[datetime]:
     """把纳秒级 Unix 时间戳转成带 UTC 时区的 datetime。
 
-    用整数运算避免浮点精度误差。
+    用整数运算避免浮点精度误差。容错契约同 _ms_to_datetime
+    （类型异常 / 超界 → None，不抛错）。
     """
     if ns is None:
         return None
-    seconds = ns // _NANOSECONDS_PER_SECOND
-    micros = (ns % _NANOSECONDS_PER_SECOND) // 1000
-    return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=micros)
+    try:
+        ns_int = int(ns)
+        seconds = ns_int // _NANOSECONDS_PER_SECOND
+        micros = (ns_int % _NANOSECONDS_PER_SECOND) // 1000
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=micros)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _value_of(entry: dict) -> Any:
@@ -128,19 +144,38 @@ def _iter_sample_points(detail_data: Any, data_type: str) -> list[SamplePoint]:
                 if isinstance(v, dict) and "fieldName" in v:
                     val = _value_of(v)
                     break
-            if val is None:
+            value = _as_float(val)
+            if value is None:
                 continue
-            samples.append(SamplePoint(time=t, value=float(val)))
+            samples.append(SamplePoint(time=t, value=value))
     samples.sort(key=lambda s: s.time)
     return samples
 
 
 def _as_float(v: Any) -> Optional[float]:
-    return float(v) if v is not None else None
+    """容错数值转换：不可解析（垃圾字符串/dict/list 等）→ None。
+
+    审计修复（健壮性压力测试证实）：此前裸 float()/int() 会让单条
+    malformed 记录炸掉整批 parse。数字字符串按数值接受（宽松策略）；
+    NaN/inf 为 JSON 非法值，出现即异常，归 None 不伪造。
+    """
+    if v is None:
+        return None
+    try:
+        result = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 def _as_int(v: Any) -> Optional[int]:
-    return int(v) if v is not None else None
+    """容错整数转换：不可解析 → None（契约同 _as_float）。"""
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def parse_activity_record(raw: dict) -> ActivityRecord:
@@ -164,6 +199,9 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
         or raw.get("performanceSummary")
         or {}
     )
+    # 审计修复：performanceSummary 为非 dict（如字符串）时按缺失处理
+    if not isinstance(perf, dict):
+        perf = {}
     pace_summary = activity_summary.get("paceSummary") or {}
 
     # 心率统计（不同导出可能用 averageHeartRate / avg 等命名，逐个尝试）
@@ -178,8 +216,8 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
 
     # 配速（由速度推导：pace 秒/公里 = 1000 / 速度(米/秒)）
     speed = summary.get("com.huawei.continuous.speed.statistics", {})
-    avg_speed = _find_field(speed, "averageSpeed", "avgSpeed", "average", "avg")
-    max_speed = _find_field(speed, "maxSpeed", "max")
+    avg_speed = _as_float(_find_field(speed, "averageSpeed", "avgSpeed", "average", "avg"))
+    max_speed = _as_float(_find_field(speed, "maxSpeed", "max"))
 
     # Phase 6.8：周期聚合候选字段（真实数据 5/5 记录稳定提供）
     cal = summary.get("com.huawei.continuous.calories.burnt.total", {})
@@ -193,11 +231,17 @@ def parse_activity_record(raw: dict) -> ActivityRecord:
     # 数据交叉验证：avgPace 351.5 ≈ 1000/avgSpeed 351.1）；缺失时由速度推导
     auth_avg_pace = _as_float(pace_summary.get("avgPace")) if isinstance(pace_summary, dict) else None
     auth_best_pace = _as_float(pace_summary.get("bestPace")) if isinstance(pace_summary, dict) else None
-    avg_pace = auth_avg_pace or (
-        (1000.0 / avg_speed) if avg_speed and avg_speed > 0 else None
+    # 0 / 负配速视为无效标记（与 posture statistics 的 -1 标记同风格），
+    # 回退速度推导；推导同样要求速度为正的有限数值
+    avg_pace = (
+        auth_avg_pace
+        if auth_avg_pace is not None and auth_avg_pace > 0
+        else ((1000.0 / avg_speed) if avg_speed and avg_speed > 0 else None)
     )
-    best_pace = auth_best_pace or (
-        (1000.0 / max_speed) if max_speed and max_speed > 0 else None
+    best_pace = (
+        auth_best_pace
+        if auth_best_pace is not None and auth_best_pace > 0
+        else ((1000.0 / max_speed) if max_speed and max_speed > 0 else None)
     )
 
     return ActivityRecord(
