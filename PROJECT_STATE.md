@@ -5,9 +5,9 @@
 
 ## Current Phase
 
-Phase 8：训练能力域（athleticPerformance 运动能力评估 / sportReports PB 个人纪录，2 个独立 tool）— **真实验收通过（2026-08-17：performance 五指数+6 预测成绩 / pb 6 条 PB），审计+压力测试轮完成（315 passed），仅余 test_mcp_client 14/14 复验**
+**v1.1 已发布（2026-08-17，git tag v1.1）**——14 个 MCP tool：训练域 9（列表/详情/摘要/指标/周期聚合/对比/周趋势/环比/健康检查）+ 恢复状态域 3（睡眠/静息心率/HRV）+ 训练能力域 2（运动能力评估/PB 个人纪录）；315 测试全绿；全程代码审计 + 压力测试轮完成（4 处 P1 容错缺口修复，性能基准毫秒级）；README 补 401 认证过期排障指引。
 
-（Phase 7 已于 2026-08-17 完成真实验收：test_mcp_client 12/12 passed；resting-hr 28 天 / hrv 28 天真实数据返回正常；Phase 8 亦于同日完成真实数据验收：performance 五指数+6 预测成绩 / pb 6 条纪录全部返回；**随后全程代码审计 + 压力测试轮完成**：修复 Phase 7/8 parser 四处容错缺口（NaN/inf 透传、超大 int OverflowError、非 str fieldName ValidationError、bool 时间戳伪造 1970）+ unicode 日过滤，test_robustness 扩展至 97 项（+61），315 passed；性能基准全绿：5000 条活动解析 52.6ms / 104 周趋势 53.2ms / 5000 晚睡眠 38.3ms / 730 天统计 2.7ms / 万级 PB 与预测成绩 ~20ms——待 test_mcp_client 14/14 复验后 Phase 8 关闭）
+（Phase 7 已于 2026-08-17 完成真实验收：test_mcp_client 12/12 passed；resting-hr 28 天 / hrv 28 天真实数据返回正常；Phase 8 亦于同日完成真实数据验收：performance 五指数+6 预测成绩 / pb 6 条纪录全部返回；**随后全程代码审计 + 压力测试轮完成**：修复 Phase 7/8 parser 四处容错缺口（NaN/inf 透传、超大 int OverflowError、非 str fieldName ValidationError、bool 时间戳伪造 1970）+ unicode 日过滤，test_robustness 扩展至 97 项（+61），315 passed；性能基准全绿：5000 条活动解析 52.6ms / 104 周趋势 53.2ms / 5000 晚睡眠 38.3ms / 730 天统计 2.7ms / 万级 PB 与预测成绩 ~20ms）
 
 ## Completed
 
@@ -209,10 +209,10 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Next Action
 
-1) 【需用户复验】test_mcp_client.py 14/14（Phase 8 两 tool 已过 test_real_htc 真实数据验收，MCP 出站链路复验后 Phase 8 关闭）2) 【需 Manager 决策】activityType→运动名映射（13/56/90/127/161）；HR/配速 Zone 标准；周期对比/环比是否加活跃时间与配速指标；stride 单位 3) 【需用户/真实数据】>107 条归窗规模的 limit 截断行为验证（数据积累后）4) 【可选】训练负荷 stats 端点（activityRecords periodStatistics:calculate / sampleSet trainingLoad，勘探证据已留档）——属聚合域扩展，价值待 Manager 评估。
+1) 【发布后复验（非阻塞）】test_mcp_client.py 14/14（Phase 8 两 tool 已过 test_real_htc 真实数据验收，MCP 出站链路复验仅作记录）2) 【需 Manager 决策】activityType→运动名映射（13/56/90/127/161）；HR/配速 Zone 标准；周期对比/环比是否加活跃时间与配速指标；stride 单位 3) 【需用户/真实数据】>107 条归窗规模的 limit 截断行为验证（数据积累后）4) 【可选 v1.2 候选】训练负荷 stats 端点（activityRecords periodStatistics:calculate / sampleSet trainingLoad，勘探证据已留档）——属聚合域扩展，价值待 Manager 评估；工程债：三处数值/时间转换助手收敛为单一 converters.py（审计建议，非发布阻塞）。
 
-**项目状态**：14 个 MCP tool；12 个已通过真实 MCP 客户端出站链路验收（12/12，2026-08-17）；Phase 8 两 tool 已过真实数据验收（test_real_htc performance/pb 模式），MCP 链路 14/14 复验后全量关闭。全程代码审计 + 压力测试轮已完成（315 passed，4 处 P1 容错缺口修复，性能基准全绿）。
+**项目状态**：**v1.1 已发布（2026-08-17，git tag v1.1）**。14 个 MCP tool；12 个已通过真实 MCP 客户端出站链路验收（12/12）；Phase 8 两 tool 已过真实数据验收（test_real_htc performance/pb 模式），MCP 链路 14/14 为发布后非阻塞复验项。全程代码审计 + 压力测试轮完成（315 passed，4 处 P1 容错缺口修复，性能基准全绿）。README 含 401 认证过期排障指引。
 
 ## Last Updated
 
-2026-08-17（全程代码审计 + 压力测试轮完成时）
+2026-08-17（v1.1 发布时）

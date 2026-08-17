@@ -48,6 +48,43 @@ Huawei Training Camp / Huawei Health 网页端的运动训练数据。
 取值方式：在自己浏览器开发者工具 → Network 中，找到网页端对
 `activityRecord:query` 的成功请求，复制其请求头的值。
 
+## 排障：401 / 认证过期
+
+**症状**：任一 tool 报 `HTC HTTP 请求失败：status=401`（或脚本输出
+`HTC API request: FAILED` + 401）。通常**昨天还能用、今天全体 tool 一起失败**——
+这是会话凭证过期的典型形态，不是本项目代码问题。
+
+**原因**：`HTC_AUTHORIZATION` / `HTC_COOKIE` 来自浏览器会话，有效期由华为
+服务端控制（数小时到数天不等），过期后所有请求统一 401。
+
+**修复步骤**：
+
+1. 浏览器重新登录华为运动健康网页端，确认页面能正常看到训练数据；
+2. 开发者工具 → Network → 刷新页面 → 找到对 `activityRecord:query` 的
+   **成功（200）**请求 → 重新复制 `Authorization` 与 `x-client-id`
+   （如启用了 `HTC_COOKIE` 也一并更新）；
+3. 按使用方式刷新凭证：
+   - **终端脚本**（test_real_htc.py / test_mcp_client.py）：在**同一个终端**
+     重新 `$env:HTC_AUTHORIZATION = "<新值>"` 等即可，下次运行生效；
+   - **MCP 客户端常驻服务**（Claude Desktop 等）：服务进程的环境在
+     **启动那一刻**固定（本项目在每次 tool 调用时读取进程环境，但进程
+     环境不会跟随你终端的变化）——需在 MCP 客户端的启动配置（env 段）
+     里替换新值，然后**重启 MCP 服务 / 客户端**；
+4. 验证：`.\.venv\Scripts\python.exe scripts\test_real_htc.py` 输出
+   `SUCCESS` 即恢复。
+
+**相邻情况区分**：
+
+| 现象 | 含义 | 处理 |
+|---|---|---|
+| 全部 tool 401 | 凭证过期（最常见） | 按上述步骤换新 |
+| 单一 tool 400 | 该请求参数问题 | 提 issue 附现象（不含凭证） |
+| 403 / 405 | 权限或入口不匹配 | 确认复制的是 `things.dbankcloud.cn` 域下成功请求的请求头 |
+| 脚本 WARNING 提示未设 `HTC_VERSION` / `HTC_COOKIE` | 可选头缺失，不致命 | 通常仍可成功；被拒时补全 |
+
+> 安全提醒：排障过程中复制粘贴的凭证只进环境变量，不要截图 / 粘贴到
+> issue / 写入任何文件。
+
 ## 安装与运行
 
 ```powershell
