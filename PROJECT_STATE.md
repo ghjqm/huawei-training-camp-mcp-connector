@@ -215,4 +215,4 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Last Updated
 
-2026-08-17（v1.1 发布时）
+2026-08-17（GitHub 发布准备完成：LICENSE(MIT) 补齐、README 萌新友好版五步教程 + FAQ、全历史安全扫描零凭证泄漏）
