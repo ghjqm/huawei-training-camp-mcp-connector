@@ -241,25 +241,40 @@ def test_tool_empty_list_legal():
 # ---------------- 真实 fixture 离线聚合 ----------------
 
 def test_real_records_aggregation():
-    """真实 records（data_temp，5 条）离线聚合：只断言数据可证的事实。"""
+    """真实 records（data_temp）离线聚合：期望值由测试内手写计算动态推导。
+
+    对拍而非快照锚点：data_temp 快照会被真实请求刷新，硬编码数值会漂移；
+    本用例断言聚合层输出 == 手写独立聚合，与快照内容无关（永不漂移）。
+    """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在（data_temp 为本地隐私数据）")
+    from collections import Counter
+
     raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
     records = [parse_activity_record(r) for r in raw]
     s = aggregate_activity_period(records)
 
-    assert s.activity_count == 5
-    # 距离：7010+1400+4350+1800+8010（Phase 6.13 对刷新后 fixture 重新核对）
-    assert s.total_distance == 22570.0
-    assert s.distance_activity_count == 5
-    # 分组：3×type90 + 2×type56（Phase 6.13 fixture 刷新后核对）
+    assert s.activity_count == len(records)
+    # 距离：手写求和（只聚合有效值）
+    dists = [r.distance for r in records if r.distance is not None]
+    assert s.total_distance == pytest.approx(sum(dists))
+    assert s.distance_activity_count == len(dists)
+    # 分组：手写 Counter 对拍（整体与 per-type 计数/距离一致）
+    expected_counts = Counter(r.activity_type for r in records)
     by_type = {t.activity_type: t for t in s.activity_types}
-    assert by_type[90].count == 3
-    assert by_type[56].count == 2
-    assert by_type[56].total_distance == 15020.0
-    # HR：至少 type56 有（avg 164.0 / max 188.0，Phase 6.6 已确认）
-    assert s.hr_activity_count >= 1
-    assert s.max_heart_rate >= 188.0
+    assert set(by_type) == set(expected_counts)
+    for type_id, cnt in expected_counts.items():
+        assert by_type[type_id].count == cnt
+        type_dists = [
+            r.distance for r in records
+            if r.activity_type == type_id and r.distance is not None
+        ]
+        assert by_type[type_id].total_distance == pytest.approx(sum(type_dists))
+    # HR：有均值的记录数与聚合层一致，最大值 == 手写最大
+    avg_hrs = [r.avg_heart_rate for r in records if r.avg_heart_rate is not None]
+    if avg_hrs:
+        assert s.hr_activity_count == len(avg_hrs)
+        assert s.max_heart_rate == max(r.max_heart_rate for r in records if r.max_heart_rate is not None)
 
 
 def test_real_records_aggregation_matches_manual():
@@ -321,20 +336,40 @@ def test_new_fields_partial_availability():
 
 
 def test_real_records_new_fields_exact():
-    """真实 fixture（data_temp 5 条）：新字段聚合值与勘探核对值精确一致。
+    """真实 fixture（data_temp）：新字段聚合值与手写求和精确一致。
 
-    Phase 6.13：fixture 在 6.12 真实验收后刷新，精确值随之重新核对。
+    动态对拍：期望值从当前 fixture 逐条求和推导（快照刷新不漂移）；
+    全缺字段断言 None 语义（不伪造 0）。
     """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在")
     raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
-    s = aggregate_activity_period([parse_activity_record(r) for r in raw])
-    assert s.total_calories == 1154.0
-    assert s.total_ascent == 70.5 and s.total_descent == 70.7
-    assert s.total_steps == 25712
-    assert s.calories_activity_count == 5
-    assert s.ascent_activity_count == 5
-    assert s.steps_activity_count == 5
+    records = [parse_activity_record(r) for r in raw]
+    s = aggregate_activity_period(records)
+
+    def _expected_sum(attr):
+        vals = [getattr(r, attr) for r in records if getattr(r, attr) is not None]
+        return (sum(vals), len(vals)) if vals else (None, 0)
+
+    for field, attr in [
+        ("total_calories", "calories"),
+        ("total_ascent", "ascent"),
+        ("total_descent", "descent"),
+        ("total_steps", "steps"),
+    ]:
+        expected, n = _expected_sum(attr)
+        got = getattr(s, field)
+        if expected is None:
+            assert got is None
+        else:
+            assert got == pytest.approx(expected)
+        count_field = {
+            "total_calories": "calories_activity_count",
+            "total_ascent": "ascent_activity_count",
+            "total_descent": "ascent_activity_count",
+            "total_steps": "steps_activity_count",
+        }[field]
+        assert getattr(s, count_field) == n
 
 
 # ---------------- Phase 6.13：活跃时间 / 周期配速 ----------------
@@ -449,25 +484,29 @@ def test_active_pace_per_type_symmetric():
 def test_real_records_active_time_pace_identity():
     """证据 B 永久回归（Phase 6.13）：设备 avgPace 恒等式 activeTime_s/distance_km。
 
-    5 条真实记录逐条验证（容差 0.01 s/km），如 8010m/2859s=356.93 vs
+    真实记录逐条验证（容差 0.01 s/km），如 8010m/2859s=356.93 vs
     设备 356.92883——证明设备配速口径 = 纯运动时间（activeTime, ms）/距离，
-    而非 elapsed time。fixture 缺失时 skip（data_temp 为本地隐私数据）。
+    而非 elapsed time。动态对拍：计数与聚合期望从当前 fixture 推导，
+    快照刷新不漂移；fixture 缺失时 skip（data_temp 为本地隐私数据）。
     """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在")
     raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
     records = [parse_activity_record(r) for r in raw]
-    assert len(records) == 5
-    for r in records:
-        assert r.active_time_ms is not None  # 5/5 提供顶层 activeTime
-        assert r.distance is not None
+    dual = [
+        r for r in records
+        if r.active_time_ms is not None and r.distance is not None
+    ]
+    assert dual, "real fixture 无双值记录（activeTime+distance），无法验证恒等式"
+    for r in dual:
         derived_pace = (r.active_time_ms / 1000.0) / (r.distance / 1000.0)
+        assert r.avg_pace is not None
         assert derived_pace == pytest.approx(r.avg_pace, abs=0.01)
     # 周期口径：ΣactiveTime_s / Σdistance_km（设备口径的聚合推广）
     s = aggregate_activity_period(records)
-    total_s = sum(r.active_time_ms for r in records) / 1000.0
-    total_km = sum(r.distance for r in records) / 1000.0
+    total_s = sum(r.active_time_ms for r in dual) / 1000.0
+    total_km = sum(r.distance for r in dual) / 1000.0
     assert s.total_active_time_seconds == pytest.approx(total_s)
     assert s.average_pace_seconds_per_km == pytest.approx(total_s / total_km)
-    assert s.active_time_activity_count == 5
-    assert s.pace_activity_count == 5
+    assert s.active_time_activity_count == len(dual)
+    assert s.pace_activity_count == len(dual)

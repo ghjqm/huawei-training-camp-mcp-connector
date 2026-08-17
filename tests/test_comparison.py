@@ -416,44 +416,62 @@ def test_fetch_validates_before_request():
 # ---------------- 真实 fixture 合成对比（SYNTHETIC COMPARISON VALIDATION） ----------------
 
 def test_real_records_synthetic_period_comparison():
-    """真实记录按时间拆成基线(前2)/当前(后3)两个合成周期，与手写计算交叉验证。
+    """真实记录按时间拆成基线/当前两个合成周期，与手写计算交叉验证。
 
     注意：这不是真实历史周期对比（fixture 只是一次列表快照）。
+    动态对拍：拆分计数、总量合计、分组合计全部从当前 fixture 手写推导，
+    快照刷新不漂移。
     """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在（data_temp 为本地隐私数据）")
+    from collections import Counter
+
     from src.huawei_health_mcp.parser import parse_activity_record
 
     raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
     records = sorted(
         (parse_activity_record(r) for r in raw), key=lambda r: r.start_time
     )
+    if len(records) < 3:
+        pytest.skip(f"real fixture 记录数 {len(records)} < 3，无法做 2/N 拆分")
     baseline_recs, current_recs = records[:2], records[2:]
     b = aggregate_activity_period(baseline_recs)
     cur = aggregate_activity_period(current_recs)
     c = compare_training_periods(b, cur)
 
-    # 手写交叉验证（距离全 5/5 有效，Phase 6.7/6.8 已确认）
-    b_dist = sum(r.distance for r in baseline_recs)
-    c_dist = sum(r.distance for r in current_recs)
-    assert c.total_distance.baseline == b_dist
-    assert c.total_distance.current == c_dist
+    # 手写交叉验证（距离只聚合有效值）
+    b_dist = sum(r.distance for r in baseline_recs if r.distance is not None)
+    c_dist = sum(r.distance for r in current_recs if r.distance is not None)
+    assert c.total_distance.baseline == pytest.approx(b_dist)
+    assert c.total_distance.current == pytest.approx(c_dist)
     assert c.total_distance.delta == pytest.approx(c_dist - b_dist)
-    assert c.total_distance.percentage_change == pytest.approx(
-        (c_dist - b_dist) / b_dist * 100
-    )
+    if b_dist:
+        assert c.total_distance.percentage_change == pytest.approx(
+            (c_dist - b_dist) / b_dist * 100
+        )
 
-    # 计数与单位不变量：整体合计与 Phase 6.13 重新核对的精确断言一致
-    assert c.activity_count.baseline == 2 and c.activity_count.current == 3
-    assert c.activity_count.delta == 1
-    assert b.total_calories + cur.total_calories == 1154.0
-    assert b.total_steps + cur.total_steps == 25712
-    assert c.total_calories.delta == pytest.approx(
-        cur.total_calories - b.total_calories
-    )
-    # activity_types 分组随内嵌 summary 保真（整体 3x90 + 2x56）
-    total_90 = (
-        next(t.count for t in b.activity_types if t.activity_type == 90)
-        + next(t.count for t in cur.activity_types if t.activity_type == 90)
-    )
-    assert total_90 == 3
+    # 计数与单位不变量：合计 = 手写全量求和（None 语义保真）
+    assert c.activity_count.baseline == len(baseline_recs)
+    assert c.activity_count.current == len(current_recs)
+    assert c.activity_count.delta == len(current_recs) - len(baseline_recs)
+
+    def _total(recs, attr):
+        vals = [getattr(r, attr) for r in recs if getattr(r, attr) is not None]
+        return sum(vals) if vals else None
+
+    all_cal = _total(records, "calories")
+    if all_cal is not None:
+        assert b.total_calories + cur.total_calories == pytest.approx(all_cal)
+        assert c.total_calories.delta == pytest.approx(
+            cur.total_calories - b.total_calories
+        )
+    all_steps = _total(records, "steps")
+    if all_steps is not None:
+        assert b.total_steps + cur.total_steps == all_steps
+    # activity_types 分组随内嵌 summary 保真：两周期分组合计 == 手写 Counter
+    merged = Counter()
+    for t in b.activity_types:
+        merged[t.activity_type] += t.count
+    for t in cur.activity_types:
+        merged[t.activity_type] += t.count
+    assert merged == Counter(r.activity_type for r in records)

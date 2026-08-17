@@ -384,9 +384,9 @@ def test_tool_empty_response_legal():
 def test_real_records_parse_window_and_delta_structure():
     """真实数据：解析 → 归窗 → 环比结构（AUTOMATED VERIFIED，非真实多周趋势）。
 
-    fixture 实际跨度 1.43 天（Phase 6.10 已报告），锚点=最晚 end+1s 时
-    全部 5 条落最近窗 → 唯一相邻对 = 空周 → 5 条周：
-    count delta=+5、pct=None（baseline 0 不除零）、距离 delta=None。
+    锚点=最晚 end+1s → 全部记录落最近窗 → 唯一相邻对 = 空周 → N 条周：
+    count delta=+N、pct=None（baseline 0 不除零）、距离 delta=None。
+    动态对拍：N 从当前 fixture 推导，快照刷新不漂移。
     """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在（data_temp 为本地隐私数据）")
@@ -394,6 +394,7 @@ def test_real_records_parse_window_and_delta_structure():
 
     raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
     records = [parse_activity_record(r) for r in raw]
+    n = len(records)
     anchor = max(r.end_time for r in records) + timedelta(seconds=1)
 
     delta = compute_weekly_trend_delta(
@@ -402,8 +403,8 @@ def test_real_records_parse_window_and_delta_structure():
     assert len(delta.transitions) == 1
     t = delta.transitions[0]
     assert t.activity_count.baseline == 0
-    assert t.activity_count.current == 5
-    assert t.activity_count.delta == 5
+    assert t.activity_count.current == n
+    assert t.activity_count.delta == n
     assert t.activity_count.percentage_change is None
     assert t.total_distance.delta is None  # 旧周距离缺失≠0
     assert t.current_window_end == anchor
@@ -412,8 +413,8 @@ def test_real_records_parse_window_and_delta_structure():
 def test_real_records_synthetic_multiweek_delta():
     """SYNTHETIC COMPARISON VALIDATION：真实记录人工拆两个周窗口做环比。
 
-    锚点 = 第 3 早记录 start + 7d：旧窗 2 条、新窗 3 条（Phase 6.10 已
-    验证的拆分），环比与手写 compare_metric 一致；不伪装成真实历史周环比。
+    锚点 = 第 3 早记录 start + 7d：旧窗 2 条、新窗其余条，环比与手写
+    compare_metric 一致；不伪装成真实历史周环比。动态对拍：快照刷新不漂移。
     """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在")
@@ -423,6 +424,8 @@ def test_real_records_synthetic_multiweek_delta():
     records = sorted(
         (parse_activity_record(r) for r in raw), key=lambda r: r.start_time
     )
+    if len(records) < 3:
+        pytest.skip(f"real fixture 记录数 {len(records)} < 3，无法做 2/N 拆分")
     anchor = records[2].start_time + timedelta(days=7)
     trend = aggregate_weekly_trend(records, weeks=2, now=anchor)
     delta = compute_weekly_trend_delta(trend)
@@ -433,8 +436,10 @@ def test_real_records_synthetic_multiweek_delta():
     assert t.total_distance == compare_metric(b.total_distance, c.total_distance)
     assert t.total_calories == compare_metric(b.total_calories, c.total_calories)
     assert t.total_steps == compare_metric(b.total_steps, c.total_steps)
-    # 计数方向：older 2 条 → newer 3 条
-    assert t.activity_count.baseline == 2 and t.activity_count.current == 3
-    assert t.activity_count.delta == 1
-    # 环比口径与总量守恒：两窗合计精确值不变（Phase 6.13 重新核对）
-    assert b.total_distance + c.total_distance == 22570.0
+    # 计数方向：older 2 条 → newer 其余条
+    assert t.activity_count.baseline == 2
+    assert t.activity_count.current == len(records) - 2
+    assert t.activity_count.delta == len(records) - 4
+    # 环比口径与总量守恒：两窗合计 == 手写全量求和
+    whole_dist = sum(r.distance for r in records if r.distance is not None)
+    assert b.total_distance + c.total_distance == pytest.approx(whole_dist)

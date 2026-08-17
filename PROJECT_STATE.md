@@ -188,6 +188,10 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 - 每个指标带 source 字段；缺失即 None；单位：speed=m/s、pace=s/km、distance=m、duration=s
 - active_time_raw 原样保留（毫秒，Phase 6.13 已裁决单位）
 
+### 测试契约：真实 fixture 对拍禁止快照数值锚点（2026-08-17）
+
+- data_temp 真实快照会被真实请求刷新（内容随时变），test_real_records_* 对拍用例的期望值必须由测试内手写独立计算推导（sum/Counter/整体聚合对拍），禁止硬编码具体数值/条数/分组锚点；记录数敏感的拆分用例需加最小记录数 skip guard
+
 ## Known Issues
 
 1. 【已关闭，Phase 6.13】activeTime 单位 = 毫秒：证据 A——5 条真实记录 activeTime(ms) 与记录跨度之比 0.625~0.999 全 ∈(0,1]（活跃时间≤总跨度，物理自洽）；证据 B——distance÷(activeTime_ms/1000) 与设备 avgPace 5/5 精确恒等（如 8010m/2859s=356.93 vs 356.92883）。模型注释已改毫秒，真实值原样保留不换算；证据 B 已固化为永久回归测试（tests/test_period.py::test_real_records_active_time_pace_identity）
@@ -206,6 +210,10 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 - 凭证只在用户终端会话有效；Agent 无法真实联调（scripts/test_real_htc.py 由用户执行）
 - 不同运动类型/设备的 detail schema 可能与本仓验证样本有差异
+
+## Post-v1.1 Maintenance
+
+- 2026-08-17 夹具漂移修复（非代码回归）：data_temp 真实快照被后续真实请求刷新后，8 个 test_real_records_* 用例中的硬编码快照锚点（5 条 / 22570m / 1154kcal / 25712 步 / 3×90+2×56 等）过期失效。修复原则：期望值全部改为测试内手写独立计算（sum / Counter / 整体聚合对拍），断言"聚合层输出 == 手写推导"，与快照内容解耦；记录数 <3 的拆分用例加显式 skip guard。防漂移自证：模拟快照刷新（删 1 条）后 9 个 real_records 用例全绿。教训入 Critical Contracts：真实 fixture 对拍用例禁止硬编码快照数值锚点。
 
 ## Next Action
 

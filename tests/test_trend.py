@@ -23,6 +23,7 @@ from src.huawei_health_mcp.server import (
     fetch_weekly_trend,
     get_training_weekly_trend,
 )
+from src.huawei_health_mcp.period_analysis import aggregate_activity_period
 from src.huawei_health_mcp.trend_analysis import (
     aggregate_weekly_trend,
     build_week_windows,
@@ -337,11 +338,14 @@ def test_fetch_validates_before_request():
 def test_real_records_parse_and_window_assignment():
     """真实数据解析 + 归窗验证（非真实历史周趋势：fixture 是一次列表快照）。
 
-    策略：锚点 = 最晚 end_time + 1s（全部 5 条必落最近窗口），
-    与 Phase 6.8 精确总量交叉验证；再显式报告 fixture 实际时间范围。
+    策略：锚点 = 最晚 end_time + 1s（全部记录必落最近窗口）；归窗结果与
+    整体聚合 + 手写 Counter 交叉验证。动态对拍：期望值从当前 fixture 推导，
+    快照刷新不漂移。
     """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在（data_temp 为本地隐私数据）")
+    from collections import Counter
+
     from src.huawei_health_mcp.parser import parse_activity_record
 
     raw = json.loads(REAL_RECORDS.read_text(encoding="utf-8"))
@@ -356,21 +360,24 @@ def test_real_records_parse_and_window_assignment():
     old, new = trend.weeks
     # 锚点 = 最晚 end + 1s → 全部记录落最近窗口（数据来自 7 天列表查询）
     assert old.summary.activity_count == 0
-    assert new.summary.activity_count == 5
-    # 与 Phase 6.13 重新核对的精确总量交叉验证
-    assert new.summary.total_distance == 22570.0
-    assert new.summary.total_calories == 1154.0
-    assert new.summary.total_ascent == 70.5 and new.summary.total_descent == 70.7
-    assert new.summary.total_steps == 25712
+    assert new.summary.activity_count == len(records)
+    # 归窗完整性：最近窗口聚合 == 整体聚合（同一批记录两条路径对拍）
+    whole = aggregate_activity_period(records)
+    assert new.summary.total_distance == pytest.approx(whole.total_distance)
+    assert new.summary.total_calories == whole.total_calories
+    assert new.summary.total_ascent == whole.total_ascent
+    assert new.summary.total_descent == whole.total_descent
+    assert new.summary.total_steps == whole.total_steps
+    # 分组：手写 Counter 对拍
     by_type = {t.activity_type: t.count for t in new.summary.activity_types}
-    assert by_type == {90: 3, 56: 2}
+    assert by_type == dict(Counter(r.activity_type for r in records))
 
 
 def test_real_records_split_across_weeks_synthetic():
     """跨周趋势逻辑验证（SYNTHETIC）：真实记录按时间人工拆到两个周窗口。
 
-    锚点取中位分割：前 2 条归旧窗、后 3 条归新窗，两窗计数与距离
-    之和与整体精确值一致（不伪装成真实历史周趋势）。
+    锚点取中位分割：前 2 条归旧窗、其余归新窗，两窗计数与各总量之和
+    与整体聚合对拍（不伪装成真实历史周趋势）。动态对拍：快照刷新不漂移。
     """
     if not REAL_RECORDS.exists():
         pytest.skip("real fixture 不存在")
@@ -380,14 +387,17 @@ def test_real_records_split_across_weeks_synthetic():
     records = sorted(
         (parse_activity_record(r) for r in raw), key=lambda r: r.start_time
     )
+    if len(records) < 3:
+        pytest.skip(f"real fixture 记录数 {len(records)} < 3，无法做 2/N 拆分")
     # 锚点：旧窗 = [r2-7d, r2)，新窗 = [r2, r2+7d)——r2 恰在边界归新窗；
     # r0/r1 均晚于 r2-7d（fixture 来自 7 天列表查询），必落旧窗
     anchor = records[2].start_time + timedelta(days=7)
     trend = aggregate_weekly_trend(records, weeks=2, now=anchor)
     old, new = trend.weeks
     assert old.summary.activity_count == 2
-    assert new.summary.activity_count == 3
-    # 两窗合计 = Phase 6.13 重新核对的精确总量
-    assert old.summary.total_distance + new.summary.total_distance == 22570.0
-    assert old.summary.total_calories + new.summary.total_calories == 1154.0
-    assert old.summary.total_steps + new.summary.total_steps == 25712
+    assert new.summary.activity_count == len(records) - 2
+    # 两窗合计 == 整体聚合（守恒对拍）
+    whole = aggregate_activity_period(records)
+    assert old.summary.total_distance + new.summary.total_distance == pytest.approx(whole.total_distance)
+    assert old.summary.total_calories + new.summary.total_calories == whole.total_calories
+    assert old.summary.total_steps + new.summary.total_steps == whole.total_steps
