@@ -5,7 +5,7 @@
 
 ## Current Phase
 
-Phase 6.14（真实 MCP 客户端验收：认证头缺失修复）— **代码完成 + 全量测试通过，待用户真凭证 9/9 复验**
+Phase 6.14（真实 MCP 客户端验收：认证头缺失修复 + 9/9 全工具真实通过）— **PASS**
 
 ## Completed
 
@@ -27,7 +27,7 @@ Phase 6.14（真实 MCP 客户端验收：认证头缺失修复）— **代码�
 - Phase 6.10：trend_analysis.py（build_week_windows / aggregate_weekly_trend 纯函数，每窗口复用 aggregate_activity_period 零复制）+ TrainingWeekSummary（内嵌完整 TrainingPeriodSummary）/ TrainingTrendSummary 模型 + fetch_weekly_trend（单次列表请求整个跨度 [now-weeks*7d, now)，同一 now 用于请求与切分 → 零边界漂移）+ get_training_weekly_trend(weeks=4, limit=100) tool（第 8 个，weeks 上限 104=730//7）；真实 fixture 实际跨度仅 1.43 天 → 只做解析/归窗验证 + Phase 6.8 精确总量交叉验证（20400/917/70.6/65.7/26769），跨周逻辑 synthetic 覆盖；+26 测试
 - Phase 6.12：工程闭环——scripts/test_real_htc.py 新增 trend [weeks] / trend-delta [weeks] 两模式（100% 复用 fetch_weekly_trend / fetch_weekly_trend_delta，脚本零窗口切分/聚合/环比逻辑重实现；输出仅安全摘要：周窗口边界（本地时间）/每周聚合（复用 _print_period_summary）/相邻周 9 项指标 baseline→current (delta, pct|N/A)；空周明确打印；weeks=1 空 transitions 说明；weeks 非整数→报错退出 1）+ tests/test_real_htc_script.py 轻量纯函数测试（参数解析/本地时间格式化，无网络，+4）；README 漂移修复（开发结构图补 period_analysis / period_comparison / trend_analysis 三模块；安装第 3 步更新为六模式示例）；无凭证运行打印缺失环境变量退出 1（已验证）；现有四模式行为未变
 - Phase 6.13：activeTime 毫秒契约落地 + 周期活跃时间聚合与周期配速——证据 A/B（5 条真实记录：activeTime(ms)/跨度比 0.625~0.999 全 ∈(0,1]；distance÷(activeTime_ms/1000) 与设备 paceSummary.avgPace 5/5 精确恒等，如 8010m/2859s=356.93 vs 356.92883）确认 activeTime=毫秒、设备配速口径=activeTime/distance；ActivityRecord +active_time_ms（记录级顶层 activeTime，int 毫秒原样保留，与既有 active_time 同源同值）；TrainingPeriodSummary / ActivityTypeSummary 对称 +total_active_time_seconds（Σms/1000，全仓唯一单位换算点）+ active_time_activity_count + average_pace_seconds_per_km（ΣactiveTime_s/Σdistance_km，双值活动子集）+ pace_activity_count，全缺→None 不伪造 0；models.py 三处单位注释修正（active_time / active_time_raw / TrainingSummary.active_time）；trend / comparison 层零改动（内嵌 summary 自动继承），compare_metric 与 transition 指标清单不动（对比是否加配速留待 Manager）；test_real_htc.py：trend-delta 的 delta 浮点噪声修复（_fmt_delta：float 两位小数带符号、int 原样、None→N/A）+ _print_period_summary 增打 total_active_time / average_pace（None→N/A）；README 三表格行补新字段说明；真实 fixture 在 6.12 真实验收后刷新（5 条：2×type56+3×type90，总距 22570m），6 处精确断言随新 fixture 重新核对（22570/1154.0/70.5/70.7/25712）；+12 测试（parser 3 + 周期聚合 6 + 证据 B 恒等式永久回归 1（容差 0.01 s/km，fixture 缺失 skip）+ 脚本格式化 2）
-- Phase 6.14：真实 MCP 客户端验收发现并修复 P0 认证 bug——scripts/test_mcp_client.py（脚本化 MCP 客户端：mcp 库 stdio 拉起服务 → initialize → list_tools → 逐个调用 9 tool，走完整 JSON-RPC 出站链路；EXPECTED_TOOLS 名单核对；get_recent_activities 结果提取真实 activity_id 供 detail 族；输出仅安全摘要）首次真实调用即暴露：server.py build_htc_headers 此前只映射 HTC_COOKIE，从不读取 HTC_AUTHORIZATION/HTC_CLIENT_ID/HTC_VERSION → MCP 服务发出的请求从不带 Authorization，真实调用恒 401 "Invalid Credentials"（此前所有真实验证走 test_real_htc.py 自建 headers，完全掩盖该缺口；src/ 全仓 grep 证实）。修复：_ENV_TO_HEADER 四变量完整映射（与 test_real_htc.py 同一契约），必填缺失时 ValueError 指明变量名（清晰本地报错优于发出注定 401 的请求误导排查）；验收脚本同步修复 StdioServerParameters env=dict(os.environ)（MCP SDK 不传 env 时子进程只得到安全默认环境，HTC_* 不继承——此前与认证 bug 叠加无法区分）；tests/test_tools.py +autouse fixture _dummy_htc_env（假凭证环境，Mock 不联网，套件在有无真实凭证的终端行为一致）+3 认证头回归测试（四变量全映射/必填缺失报错含变量名/可选缺省省略）；无凭证本地验证：MCP 链路传出清晰 "Missing required environment variable(s)" 错误（替代误导性 401）；全量 194 passed；**用户真凭证 9/9 复验待执行**
+- Phase 6.14：真实 MCP 客户端验收发现并修复 P0 认证 bug——scripts/test_mcp_client.py（脚本化 MCP 客户端：mcp 库 stdio 拉起服务 → initialize → list_tools → 逐个调用 9 tool，走完整 JSON-RPC 出站链路；EXPECTED_TOOLS 名单核对；get_recent_activities 结果提取真实 activity_id 供 detail 族；输出仅安全摘要）首次真实调用即暴露：server.py build_htc_headers 此前只映射 HTC_COOKIE，从不读取 HTC_AUTHORIZATION/HTC_CLIENT_ID/HTC_VERSION → MCP 服务发出的请求从不带 Authorization，真实调用恒 401 "Invalid Credentials"（此前所有真实验证走 test_real_htc.py 自建 headers，完全掩盖该缺口；src/ 全仓 grep 证实）。修复：_ENV_TO_HEADER 四变量完整映射（与 test_real_htc.py 同一契约），必填缺失时 ValueError 指明变量名（清晰本地报错优于发出注定 401 的请求误导排查）；验收脚本同步修复 StdioServerParameters env=dict(os.environ)（MCP SDK 不传 env 时子进程只得到安全默认环境，HTC_* 不继承——此前与认证 bug 叠加无法区分）；tests/test_tools.py +autouse fixture _dummy_htc_env（假凭证环境，Mock 不联网，套件在有无真实凭证的终端行为一致）+3 认证头回归测试（四变量全映射/必填缺失报错含变量名/可选缺省省略）；无凭证本地验证：MCP 链路传出清晰 "Missing required environment variable(s)" 错误（替代误导性 401）；全量 194 passed；**用户真凭证复验 9/9 passed（2026-08-17）**——9 个 tool 全部经真实 MCP 客户端出站链路（JSON-RPC → 服务 → HTTPS → HTC）真实调用成功，detail 族使用真实 activity_id
 
 ## Code Status
 
@@ -190,7 +190,9 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 
 ## Next Action
 
-1) 【需用户/真凭证·最高优先】重跑 scripts/test_mcp_client.py 完成 9/9 真实 MCP 客户端复验（6.14 认证修复后的最终人工验收；README 客户端配置示例同样已含正确的 env 传值方式） 2) 【需 Manager 决策】activityType→运动名映射（真实数据已出现 13/56/90/127/161 五种，等待用户对照 App 确认）；HR/配速 Zone 标准；周期对比/环比是否增加活跃时间与配速指标（6.13 已备好聚合基础，compare_metric/transition 指标清单未动）；stride 单位确认 3) 【需用户/真实数据】>107 条归窗规模的 limit 截断行为验证（数据积累后） 4) 【可自主】多趋势指标叠加（如月度滚动窗口）若 Manager 需要再扩展；comparison 支持任意错位窗口（如 vs 上上月）若 Manager 需要再扩展。
+1) 【需 Manager 决策】activityType→运动名映射（真实数据已出现 13/56/90/127/161 五种，等待用户对照 App 确认）；HR/配速 Zone 标准；周期对比/环比是否增加活跃时间与配速指标（6.13 已备好聚合基础，compare_metric/transition 指标清单未动）；stride 单位确认 2) 【需用户/真实数据】>107 条归窗规模的 limit 截断行为验证（数据积累后） 3) 【可自主】多趋势指标叠加（如月度滚动窗口）若 Manager 需要再扩展；comparison 支持任意错位窗口（如 vs 上上月）若 Manager 需要再扩展。
+
+**项目当前处于稳定态**：9 个 MCP tool 全部通过真实 MCP 客户端出站链路验收（2026-08-17，9/9 passed，含真实 activity_id 的 detail 族真实调用）；无阻塞性工程事项，后续推进以 Manager 业务裁决（映射/Zone/指标取舍）为主导。
 
 ## Last Updated
 
