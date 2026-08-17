@@ -156,7 +156,7 @@ activity_id → 列表(30天,limit=50)定位 → 逐字取 startTime/endTime/act
 - 两个完整 TrainingPeriodSummary 原样内嵌（各 *_activity_count / activity_types 保真，不重复展开）；对比层只覆盖总量与 HR（设备 summary 来源，继承 6.7 契约）；不含周期配速对比
 - 窗口语义：current=[now-N, now)、baseline=[now-2N, now-N)，半开区间相邻不重叠；两次请求共用同一 now 锚点（边界毫秒值相等）；返回记录按自身 start_time 过滤归窗（防服务端对历史区间行为宽松），start_time 缺失的记录两窗都排除
 - window_days 范围 1~365（MAX_COMPARISON_WINDOW_DAYS，两窗总跨度不超 730 上限）；limit 每窗 1~100
-- HTC list API 的 startTime/endTime 毫秒参数契约自 Phase 5 真实验证，但“endTime 在过去”的历史窗口真实行为未验证 → 防御性过滤 + Known Issue 跟踪
+- HTC list API 的 startTime/endTime 毫秒参数契约自 Phase 5 真实验证；历史窗口（endTime<now）行为已于 Phase 6.13 真实验证（见 Known Issue 6）→ 防御性过滤保留
 
 ### 周期聚合扩展契约（Phase 6.8）
 

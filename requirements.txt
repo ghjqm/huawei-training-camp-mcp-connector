@@ -10,3 +10,6 @@
 fastmcp>=3.4.7
 pydantic>=2.0.0
 httpx>=0.27.0
+# scripts/test_mcp_client.py 直接 import mcp（虽经 fastmcp 传递安装，
+# 直接依赖应显式声明）
+mcp>=1.29.0
