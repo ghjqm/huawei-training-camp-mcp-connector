@@ -605,6 +605,7 @@ def run_sleep_mode(headers: dict[str, str], argv: list[str]) -> int:
 
 def _run_stats_mode(
     label: str,
+    headers: dict[str, str],
     fetch_fn,
     url: str,
     argv: list[str],
@@ -650,7 +651,7 @@ def _run_stats_mode(
 def run_resting_hr_mode(headers: dict[str, str], argv: list[str]) -> int:
     """静息心率模式：最近 N 天 restBpm 统计（默认 28，sampleSet 端点）。"""
     return _run_stats_mode(
-        "sampleSet periodStatistics", fetch_resting_heart_rate,
+        "sampleSet periodStatistics", headers, fetch_resting_heart_rate,
         SAMPLE_SET_STATS_URL, argv, default_days=28,
     )
 
@@ -658,7 +659,7 @@ def run_resting_hr_mode(headers: dict[str, str], argv: list[str]) -> int:
 def run_hrv_mode(headers: dict[str, str], argv: list[str]) -> int:
     """HRV 模式：最近 N 天 avgHrv 统计（默认 28，healthRecords 端点）。"""
     return _run_stats_mode(
-        "healthRecords periodStatistics", fetch_hrv_stats,
+        "healthRecords periodStatistics", headers, fetch_hrv_stats,
         HEALTH_RECORD_STATS_URL, argv, default_days=28,
     )
 
