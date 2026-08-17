@@ -11,6 +11,7 @@ JSON 解析成标准化模型（AthleticPerformance / SportPersonalBests）。
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 from .models import AthleticPerformance, PersonalBestEntry, SportPersonalBests
@@ -18,11 +19,23 @@ from .parser import _ms_to_datetime
 
 
 def _to_float(value: Any) -> Optional[float]:
-    """宽松 float 转换：bool / 非数值返回 None，不抛异常。"""
+    """宽松 float 转换：bool / 非数值 / NaN / inf / 超范围整数 → None。
+
+    审计修复（Phase 8 后全程审计）：与 parser._as_float 同一容错契约——
+    NaN / inf 是 JSON 非法值（Python json 模块默认接受 NaN / Infinity
+    字面量），出现即归 None 不伪造；超大 int 转 float 会 OverflowError，
+    同样归 None。与 _as_float 的差异：不接受数字字符串（本域数值
+    契约为 JSON 数值，字符串一律 None）。
+    """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
+    if isinstance(value, int):
+        try:
+            return float(value)
+        except OverflowError:
+            return None
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     return None
 
 
@@ -94,16 +107,24 @@ def parse_personal_bests(raw: Any, activity_type: str) -> SportPersonalBests:
             continue
         start_raw = entry.get("startTime")
         end_raw = entry.get("endTime")
+        # 审计修复：bool 是 int 子类，isinstance(True, int) 为 True——
+        # 不排除会把 True 当 1ms 时间戳伪造出 1970 年的时间
+        start_int = (
+            start_raw
+            if isinstance(start_raw, int) and not isinstance(start_raw, bool)
+            else None
+        )
+        end_int = (
+            end_raw
+            if isinstance(end_raw, int) and not isinstance(end_raw, bool)
+            else None
+        )
         bests.personal_bests.append(
             PersonalBestEntry(
                 name=name,
                 value=_to_float(entry.get("value")),
-                start_time=_ms_to_datetime(
-                    start_raw if isinstance(start_raw, int) else None
-                ),
-                end_time=_ms_to_datetime(
-                    end_raw if isinstance(end_raw, int) else None
-                ),
+                start_time=_ms_to_datetime(start_int),
+                end_time=_ms_to_datetime(end_int),
             )
         )
     return bests

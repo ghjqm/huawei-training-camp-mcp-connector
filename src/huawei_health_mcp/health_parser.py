@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -81,20 +82,36 @@ def _to_int(value: Any) -> Optional[int]:
 
 
 def _to_float(value: Any) -> Optional[float]:
-    """宽松 float 转换：bool / 非数值返回 None，不抛异常。"""
+    """宽松 float 转换：bool / 非数值 / NaN / inf / 超范围整数 → None。
+
+    审计修复（Phase 8 后全程审计）：与 parser._as_float 同一容错契约——
+    NaN / inf 是 JSON 非法值（Python json 模块默认接受 NaN / Infinity
+    字面量），出现即归 None 不伪造；超大 int 转 float 会 OverflowError，
+    同样归 None。与 _as_float 的差异：不接受数字字符串（本域数值
+    契约为 JSON 数值，字符串一律 None）。
+    """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
+    if isinstance(value, int):
+        try:
+            return float(value)
+        except OverflowError:
+            return None
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     return None
 
 
 def _day_str(day: Any) -> Optional[str]:
-    """YYYYMMDD（int 或 str）→ "YYYY-MM-DD"；无法解析返回 None。"""
+    """YYYYMMDD（int 或 str）→ "YYYY-MM-DD"；无法解析返回 None。
+
+    审计修复：限制 ASCII 数字（unicode 数字如 "٢٠٢٦٠٨١٧" 的
+    isdigit() 为 True 但非本域日格式契约，归 None 不伪造）。
+    """
     if isinstance(day, bool):
         return None
     text = str(day) if isinstance(day, (int, str)) else None
-    if not text or len(text) != 8 or not text.isdigit():
+    if not text or len(text) != 8 or not (text.isascii() and text.isdigit()):
         return None
     return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
 
@@ -189,7 +206,13 @@ def parse_health_metric_stats(
     if isinstance(raw, dict):
         results = _matching_entries(raw.get("results"), field_name)
         if results:
-            resolved_field_name = results[0].get("fieldName") or field_name
+            # 审计修复：服务端 fieldName 非 str（如数字/嵌套结构）时
+            # 不得传入 Optional[str] 模型字段（Pydantic 拒绝 int→str
+            # 强转，会抛 ValidationError 炸掉整次解析）——保持调用方
+            # 传入的 field_name
+            server_field = results[0].get("fieldName")
+            if isinstance(server_field, str) and server_field:
+                resolved_field_name = server_field
             overall = _stat_block(results[0].get("statistics"))
 
         seen_days: set[str] = set()

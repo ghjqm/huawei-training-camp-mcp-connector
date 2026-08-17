@@ -101,7 +101,7 @@ $env:HTC_CLIENT_ID ?? "<未设置>"
 Remove-Item Env:HTC_AUTHORIZATION, Env:HTC_CLIENT_ID -ErrorAction SilentlyContinue
 
 # ---------- 快速健康检查 ----------
-.\.venv\Scripts\python.exe -m pytest -q                     # 全量单元测试（无需凭证，预期 254 passed）
+.\.venv\Scripts\python.exe -m pytest -q                     # 全量单元测试（无需凭证，预期 315 passed）
 .\.venv\Scripts\python.exe scripts\test_real_htc.py         # 最快连通性检查（list 模式，5 条记录）
 
 # ---------- 常用验收组合 ----------
