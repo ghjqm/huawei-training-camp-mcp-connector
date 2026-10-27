@@ -11,6 +11,7 @@ detail 响应体复用 synthetic fixture（tests/fixtures/sample_activity_detail
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -239,6 +240,17 @@ NOW_MS = 1786886400000            # 2026-08-14 前后的合成“现在”
 OLD_ID = "synthetic-old-activity-60d"
 OLD_START_MS = NOW_MS - 60 * 86400 * 1000
 OLD_END_MS = OLD_START_MS + 45 * 60 * 1000
+_FIXED_NOW = datetime.fromtimestamp(NOW_MS / 1000, tz=timezone.utc)
+
+
+class _FixedDatetime(datetime):
+    """Keep the synthetic activity window deterministic across calendar dates."""
+
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return _FIXED_NOW.replace(tzinfo=None)
+        return _FIXED_NOW.astimezone(tz)
 
 WINDOW_RECORDS = [
     {"id": OLD_ID, "activityType": 56,
@@ -275,7 +287,7 @@ def test_detail_lookup_wider_window_finds_old_activity():
     mock_client = _make_mock_client(_window_aware_handler(captured, detail_body))
     with patch(
         "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
-    ):
+    ), patch("src.huawei_health_mcp.server.datetime", _FixedDatetime):
         with pytest.raises(ValueError):
             get_activity_detail(activity_id=OLD_ID)
 
@@ -284,7 +296,7 @@ def test_detail_lookup_wider_window_finds_old_activity():
     mock_client = _make_mock_client(_window_aware_handler(captured, detail_body))
     with patch(
         "src.huawei_health_mcp.server.create_htc_client", return_value=mock_client
-    ):
+    ), patch("src.huawei_health_mcp.server.datetime", _FixedDatetime):
         result = get_activity_detail(activity_id=OLD_ID, lookback_days=90)
 
     assert captured["detail"]["startTime"] == str(OLD_START_MS)

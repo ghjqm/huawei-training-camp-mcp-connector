@@ -26,5 +26,10 @@ data/*.json
 .env
 *.secret
 
+# Dedicated Playwright auth profile and local credential proof artifacts
+auth_data/
+browser-profile/
+*.dpapi
+
 # Stage 5 real-API temp data (personal workout data, never commit)
 data_temp/

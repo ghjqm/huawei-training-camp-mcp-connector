@@ -1,12 +1,12 @@
 """HTC（华为训练营 / Huawei Health）数据获取层。
 
 职责：用 httpx 向 HTC API 发送请求，返回原始 JSON dict。
-这一层只负责"取数据"，不解析成 ActivityRecord（那是 parser 的事），
-也不做任何登录、Cookie 自动获取/刷新、Token 处理或绕过访问控制。
+这一层只负责"取数据"，不解析成 ActivityRecord（那是 parser 的事）。
+可选 AuthManager 负责提供本机凭证，并在 401 时触发一次受控恢复。
 
 【合规要求】
 - 本文件不写入任何真实 Cookie / Token / Authorization。
-- headers 必须由调用方通过构造函数传入；未来可从环境变量或配置文件传入。
+- 不启用 AuthManager 时，headers 继续由调用方通过构造函数传入。
 - 不猜测华为的认证机制，不实现登录流程，不绕过任何权限或访问控制。
 """
 
@@ -77,7 +77,7 @@ class HTCClient:
         records = client.query_activity_records(start_time="...", end_time="...")
 
     说明：
-    - headers 必须由调用方提供，本类不从任何地方自动读取认证信息。
+    - 默认凭证仍通过 headers 参数提供；AuthManager 可按请求动态取凭证。
     - 允许注入一个 httpx.Client（测试时用 MockTransport），默认新建一个。
     - 所有方法只返回原始 JSON dict，不解析为 ActivityRecord。
     """
@@ -88,14 +88,36 @@ class HTCClient:
         timeout: float = 30.0,
         url: str = ACTIVITY_RECORD_QUERY_URL,
         client: Optional[httpx.Client] = None,
+        auth_manager: Any | None = None,
     ):
         self._headers = dict(headers or {})
+        self._auth_manager = auth_manager
         self._timeout = timeout
         self._url = url
         # 允许注入 httpx.Client（测试用 MockTransport）；否则用传入的 headers/timeout 新建
         self._client = client or httpx.Client(
-            headers=self._headers, timeout=self._timeout
+            headers={} if auth_manager is not None else self._headers,
+            timeout=self._timeout,
         )
+
+    def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        """Send with current credentials and perform at most one 401 recovery."""
+        if self._auth_manager is None:
+            return self._client.request(method, url, **kwargs)
+        try:
+            headers = self._auth_manager.get_headers()
+        except Exception as exc:
+            raise HTCClientError(str(exc)) from exc
+        response = self._client.request(method, url, headers=headers, **kwargs)
+        if response.status_code == 401:
+            self._auth_manager.mark_expired()
+            if self._auth_manager.recover():
+                try:
+                    headers = self._auth_manager.get_headers()
+                    response = self._client.request(method, url, headers=headers, **kwargs)
+                except Exception as exc:
+                    raise HTCClientError("Credential recovery failed; reauthentication is required.") from exc
+        return response
 
     def _post(
         self,
@@ -109,7 +131,7 @@ class HTCClient:
         """
         request_url = url or self._url
         try:
-            response = self._client.post(request_url, json=payload)
+            response = self._send("POST", request_url, json=payload)
         except httpx.HTTPError as exc:  # 网络层错误（超时、DNS、连接失败等）
             raise HTCClientError(f"HTC 请求发生网络错误：{exc}") from exc
 
@@ -118,7 +140,8 @@ class HTCClient:
             raise HTCHTTPError(
                 status_code=response.status_code,
                 url=request_url,
-                message=(response.text or "")[:200],
+                message=("credential recovery unavailable" if response.status_code == 401
+                         and self._auth_manager is not None else (response.text or "")[:200]),
             )
 
         # 2xx 但响应体不是合法 JSON
@@ -138,7 +161,7 @@ class HTCClient:
         这类 GET 端点使用）。
         """
         try:
-            response = self._client.get(url, params=params)
+            response = self._send("GET", url, params=params)
         except httpx.HTTPError as exc:
             raise HTCClientError(f"HTC 请求发生网络错误：{exc}") from exc
 
@@ -146,7 +169,8 @@ class HTCClient:
             raise HTCHTTPError(
                 status_code=response.status_code,
                 url=str(response.request.url),
-                message=(response.text or "")[:200],
+                message=("credential recovery unavailable" if response.status_code == 401
+                         and self._auth_manager is not None else (response.text or "")[:200]),
             )
 
         try:

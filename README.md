@@ -4,12 +4,13 @@
 直接查询并分析你的训练记录、睡眠、心率、跑力，像和一个懂训练的教练聊天一样。
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)]()
-[![Tests](https://img.shields.io/badge/tests-315%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-317%20passed-brightgreen)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **安全边界**：本项目不实现任何绕过华为权限、破解认证、窃取 Cookie、
-> 绕过访问控制的功能。认证信息只由用户本人通过环境变量显式提供
-> （来自用户自己已登录的浏览器会话），不写入代码 / 配置 / Git。
+> **安全边界**：本项目不绕过验证码、二次验证或其他访问控制。用户本人
+> 在专用 Edge 配置中打开可用的 Huawei Training Camp 页面；程序只捕获该页面
+> 正常发出的成功请求。凭证由 Windows DPAPI 加密保存在本机用户目录，不写入
+> 代码、仓库或普通日志。原环境变量认证方式继续可用。
 
 ---
 
@@ -46,15 +47,15 @@ Model Context Protocol——一个让 AI 安全使用外部数据的标准协议
 - "我最近睡眠质量如何？静息心率有没有异常？" → AI 调用睡眠 / 静息心率工具
 - "我现在跑力多少？预测我半马能跑多少？" → AI 调用运动能力评估工具
 
-数据永远只在你自己的电脑 ↔ 华为服务器之间流动，AI 客户端通过本项目的
-本地服务读数，不经过任何第三方服务器。
+本地 MCP 服务直接向华为接口取数。你在 AI 客户端中请求分析时，客户端会把
+相关数据提供给你配置的模型服务；使用云端模型时，请留意该服务的隐私设置。
 
 ## 开始之前：你需要准备什么
 
 | # | 需要什么 | 说明 |
 |---|---|---|
-| 1 | 华为设备 + 账号 | 手表 / 手环 + 华为运动健康 App，且**能在电脑浏览器登录** [华为运动健康网页端](https://health.huawei.com)（海外版入口不同）看到自己的数据 |
-| 2 | 一台电脑 + Python 3.12 或更高 | Windows 教程见下文；Mac / Linux 也可用（命令换成 `python3 -m venv .venv` 等价写法） |
+| 1 | 华为设备 + 账号 | 手表 / 手环 + 华为运动健康 App，并能在电脑浏览器打开自己实际使用且可访问训练数据的 Huawei Training Camp 页面 |
+| 2 | 一台电脑 + Python 3.12 或更高 | 下文的自动登录与加密存储流程适用于 Windows，并需要安装 Microsoft Edge；Mac / Linux 可使用环境变量兼容模式 |
 | 3 | 一个支持 MCP 的 AI 客户端 | 如 **Cherry Studio**（免费、对中文用户友好）、Claude Desktop 等 |
 
 > 不需要会编程——下面每一步都是复制粘贴级别的内容。
@@ -95,48 +96,46 @@ Model Context Protocol——一个让 AI 安全使用外部数据的标准协议
    .\.venv\Scripts\python.exe -m pytest -q
    ```
 
-   最后显示 `315 passed` 即环境就绪。
+   最后显示测试通过即环境就绪。
 
 ### 第 3 步：获取华为凭证（关键步骤）
 
-本项目通过你**自己浏览器里的登录凭证**访问你的数据（就像你本人打开网页版
-一样）。凭证 = 两个字符串，从浏览器里复制出来：
+首次配置或需要重新授权时，在项目目录运行：
 
-1. 用电脑浏览器登录**华为运动健康网页端**，确认能看到自己的训练数据；
-2. 按 **F12** 打开开发者工具 → 切到 **Network（网络）** 标签；
-3. 按 **F5** 刷新页面，Network 列表里会出现一堆请求；
-4. 在过滤框输入 `activityRecord`，找到其中一条**状态码 200** 的请求，
-   点它；
-5. 右侧切到 **Headers（标头）** → 往下翻到 **Request Headers（请求标头）**，
-   找到并复制这两个值（复制时**从行首选到行尾**，别多别少）：
-   - `Authorization`：一长串以 `Bearer` 开头 → 对应 `HTC_AUTHORIZATION`
-   - `x-client-id`：一串字母数字 → 对应 `HTC_CLIENT_ID`
-6. 回到 PowerShell，粘贴设置（**引号要保留**）：
+```powershell
+.\.venv\Scripts\python.exe -m scripts.auth_login
+```
 
-   ```powershell
-   $env:HTC_AUTHORIZATION = "粘贴 Authorization 的完整值"
-   $env:HTC_CLIENT_ID     = "粘贴 x-client-id 的值"
-   ```
+程序会打开独立 Edge 配置。请在该窗口中手动打开你已确认可访问数据的
+Huawei Training Camp 页面，并查看训练记录。不要把密码、验证码或请求头发给
+程序或聊天。观察到成功的训练接口请求后，程序只把必要请求头写入 DPAPI
+加密文件 `%LOCALAPPDATA%\HuaweiTrainingCampMCP\credentials.dpapi`，不会显示值。
 
-> **安全须知**：
-> - 这两个值等同于你的登录态，**只粘贴到环境变量里**，不要发给别人、
->   不要截图发群里、不要写进任何文件；
-> - 它们会在几小时到几天后过期（华为控制），过期后按
->   [401 排障](#排障401--认证过期) 重新抓一次即可；
-> - 关闭这个 PowerShell 窗口后变量即消失，下次使用重新设置
->   （这是特性不是 bug——凭证不落盘）。
+查看本机凭证状态（不发起网络请求）：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.auth_status
+```
+
+原来的 `HTC_AUTHORIZATION` / `HTC_CLIENT_ID` 环境变量仍作为兼容回退方式，
+可在无法使用 DPAPI 的系统上继续使用。
 
 ### 第 4 步：连通性自检
 
-还在**同一个 PowerShell 窗口**（凭证设好的那个），执行：
+完成第 3 步的 Windows 授权后，在项目目录执行：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\test_real_htc.py
+.\.venv\Scripts\python.exe -m scripts.test_dpapi_mcp
 ```
 
-看到 `HTC API request: SUCCESS` 和你的训练列表 → 链路全通，继续下一步。
+看到 `DPAPI_MCP_CHECK=SUCCESS`，表示服务列出了 14 个工具，且用当前
+Windows 用户加密保存的凭证完成了一次真实训练查询。此脚本不会打印训练数据。
 
-更多自检模式（可选）：
+如果你使用的是环境变量兼容模式，可改用
+`.\.venv\Scripts\python.exe scripts\test_real_htc.py` 验证。该旧脚本只读取
+`HTC_*` 环境变量，不读取 DPAPI 凭证，并可能在本地 `data_temp/` 保存真实响应。
+
+使用环境变量兼容模式时，还可用旧脚本运行以下自检（可选）：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\test_real_htc.py sleep 7         # 最近 7 晚睡眠
@@ -161,7 +160,7 @@ Model Context Protocol——一个让 AI 安全使用外部数据的标准协议
 | 参数 | `-m src.huawei_health_mcp.server` |
 | 工作目录 | `C:\huawei-health-mcp` |
 
-JSON 配置（部分客户端直接编辑配置文件，等价于上面）：
+JSON 配置（部分客户端直接编辑配置文件；适用于完成第 3 步的 Windows 用户）：
 
 ```json
 {
@@ -169,18 +168,15 @@ JSON 配置（部分客户端直接编辑配置文件，等价于上面）：
     "huawei-training-camp": {
       "command": "C:\\huawei-health-mcp\\.venv\\Scripts\\python.exe",
       "args": ["-m", "src.huawei_health_mcp.server"],
-      "cwd": "C:\\huawei-health-mcp",
-      "env": {
-        "HTC_AUTHORIZATION": "<你的 Authorization 值>",
-        "HTC_CLIENT_ID": "<你的 x-client-id 值>"
-      }
+      "cwd": "C:\\huawei-health-mcp"
     }
   }
 }
 ```
 
-> **重要**：`env` 里的凭证写在**你本机的客户端配置里**（该文件只在你电脑上，
-> 不在 Git 仓库里）。凭证过期后改这里的新值并重启客户端。
+使用环境变量兼容模式时，须由用户本人在本机设置 `HTC_AUTHORIZATION` 与
+`HTC_CLIENT_ID`，并让 MCP 子进程继承它们。不要把真实请求头写入分享的配置
+文件或提交到 GitHub。
 
 3. 保存并启用该服务，客户端里应该能看到 14 个工具（`health_check`、
    `get_recent_activities` 等）；
@@ -217,6 +213,10 @@ JSON 配置（部分客户端直接编辑配置文件，等价于上面）：
 
 参数说明：
 
+- `get_recent_activities` 的心率是设备汇总值；列表接口可能不返回逐点心率，
+  因而 `heart_rate_samples` 为空不代表华为没有心率曲线。先取活动 id，再调用
+  `get_training_summary` 查看采样覆盖，或用 `get_activity_detail` 获取逐点数据。
+  某些设备可能返回 `0 bpm` 等无效瞬时值；解读时应检查并排除。
 - `lookback_days`：查询窗口天数，默认 30，范围 1~730；查更早的训练时调大。
 - `days`：恢复状态类窗口天数（睡眠默认 14，心率 / HRV 默认 28）。
 - `weeks`（周趋势）：周窗口数，默认 4，范围 1~104；滚动 7 天连续窗口
@@ -234,19 +234,10 @@ JSON 配置（部分客户端直接编辑配置文件，等价于上面）：
 **原因**：`HTC_AUTHORIZATION` / `HTC_COOKIE` 来自浏览器会话，有效期由华为
 服务端控制（数小时到数天不等），过期后所有请求统一 401。
 
-**修复步骤**：
-
-1. 浏览器重新登录华为运动健康网页端，确认页面能正常看到训练数据；
-2. 开发者工具 → Network → 刷新页面 → 找到对 `activityRecord:query` 的
-   **成功（200）**请求 → 重新复制 `Authorization` 与 `x-client-id`；
-3. 按使用方式刷新凭证：
-   - **终端脚本**：在**同一个终端**重新 `$env:HTC_AUTHORIZATION = "<新值>"`
-     等即可，下次运行生效；
-   - **MCP 客户端常驻服务**：服务进程的环境在**启动那一刻**固定——需在
-     MCP 客户端的启动配置（env 段）里替换新值，然后**重启 MCP 服务 /
-     客户端**；
-4. 验证：`.\.venv\Scripts\python.exe scripts\test_real_htc.py` 输出
-   `SUCCESS` 即恢复。
+**修复步骤**：先运行 `\.venv\Scripts\python.exe -m scripts.auth_status`。
+若没有可解密凭证，运行 `\.venv\Scripts\python.exe -m scripts.auth_login`，
+在专用浏览器中手动打开可访问的 Training Camp 页面并查看训练记录。若 MCP
+自动恢复后仍返回 401，按此步骤重新认证，然后重启 MCP 服务。
 
 **相邻情况区分**：
 
@@ -257,8 +248,8 @@ JSON 配置（部分客户端直接编辑配置文件，等价于上面）：
 | 403 / 405 | 权限或入口不匹配 | 确认复制的是 `things.dbankcloud.cn` 域下成功请求的请求头 |
 | 脚本 WARNING 提示未设 `HTC_VERSION` / `HTC_COOKIE` | 可选头缺失，不致命 | 通常仍可成功；被拒时按第 3 步同样方法补全 |
 
-> 安全提醒：排障过程中复制粘贴的凭证只进环境变量，不要截图 / 粘贴到
-> issue / 写入任何文件。
+> 安全提醒：DPAPI 文件仅供创建它的 Windows 用户在本机解密；不要复制到仓库、
+> issue 或其他设备。
 
 ## 常见问题 FAQ
 
@@ -274,25 +265,25 @@ JSON 配置（部分客户端直接编辑配置文件，等价于上面）：
 **Q3：`.\.venv\Scripts\pip` 提示找不到路径**
 你不在项目目录里。先 `cd` 到项目根目录（有 `requirements.txt` 的那层）。
 
-**Q4：Network 里找不到 `activityRecord` 请求**
-确认已登录网页端且能看到数据；刷新页面后再看；过滤词换 `activityRecord:query`
-或 `things.dbankcloud` 再试。
+**Q4：探测器没捕获到成功请求**
+确认专用 Edge 中打开的是你已验证可访问训练数据的 Huawei Training Camp 页面，
+并等训练列表或详情加载完毕。程序只监听该服务的 `activityRecord:query` 成功请求。
 
 **Q5：Mac / Linux 能用吗？**
-可以。等价命令：`python3 -m venv .venv`、`.venv/bin/pip install -r
-requirements.txt`、`.venv/bin/python -m src.huawei_health_mcp.server`；
-环境变量改用 `export HTC_AUTHORIZATION="..."` 写法。
+核心 MCP 服务有环境变量认证兼容路径，但本项目的浏览器授权捕获、DPAPI
+加密存储与自动恢复只在 Windows + Edge 验证过。Mac / Linux 用户需自行提供
+有效的 `HTC_AUTHORIZATION` 与 `HTC_CLIENT_ID`；这条安装路径尚未做真实账号验收。
 
 **Q6：我的数据会不会上传到第三方？**
 不会。本服务只在你本机运行，请求只发往华为官方服务器。AI 客户端从本地
 服务读数——你问 AI 时，AI 客户端会把要分析的数据发给**你自己配置的模型
 服务方**（和你平时用它聊天是同一回事，介意的话选本地模型）。
 
-**Q7：凭证放环境变量安全吗？为什么不做自动登录？**
-环境变量方式保证凭证不落盘、不进 Git。自动登录需要模拟华为认证流程，
-属于绕过/逆向范畴，本项目不做（见安全边界）。
+**Q7：程序会自动输入密码或验证码吗？**
+不会。你本人在专用 Edge 配置中登录和操作页面；程序只读取该页面正常请求的
+必要请求头。凭证使用当前 Windows 用户的 DPAPI 加密保存；环境变量方式仍兼容。
 
-**Q8：测试显示 315 passed 但我一条数据都没有？**
+**Q8：测试全通过但我一条数据都没有？**
 单元测试用合成数据，不需要凭证和网络。真实数据要看第 4 步的
 `test_real_htc.py` 输出。
 
@@ -300,7 +291,7 @@ requirements.txt`、`.venv/bin/python -m src.huawei_health_mcp.server`；
 
 ```powershell
 # 运行全部测试（全部 Mock，不联网、不需要凭证）
-.\.venv\Scripts\python.exe -m pytest -q      # 预期 315 passed
+.\.venv\Scripts\python.exe -m pytest -q      # 当前 317 passed
 ```
 
 ```
@@ -315,13 +306,17 @@ src/huawei_health_mcp/
 ├─ period_comparison.py  # 周期对比（两个 TrainingPeriodSummary → TrainingPeriodComparison）
 ├─ trend_analysis.py     # 滚动周趋势与相邻周环比（复用聚合层与对比层）
 └─ server.py             # FastMCP 服务与工具接线
-scripts/test_real_htc.py   # 人工真实请求脚本（十一模式，需要环境变量凭证）
+scripts/auth_login.py      # 用户手动操作专用 Edge，并安全保存成功请求凭证
+scripts/auth_status.py     # 检查本地 DPAPI 凭证是否可解密
+scripts/test_dpapi_mcp.py  # 清除子进程 HTC_* 后验证 DPAPI-backed MCP 数据调用
+scripts/test_auto_recovery.py # 用临时无效凭证验证真实 API 的单次 401 恢复
+scripts/test_real_htc.py   # 人工真实请求脚本（十一模式，环境变量兼容）
 scripts/test_mcp_client.py # 真实 MCP 客户端验收（14 个 tool 全调用）
 tests/                     # 单元测试（synthetic fixture，无真实用户数据）
 PROJECT_STATE.md           # 项目长期状态账本（新贡献者/Agent 从这里恢复上下文）
 ```
 
-开发约定：认证只经环境变量；真实响应只存 `data_temp/`（git-ignored）；
+开发约定：认证只经 DPAPI 本地存储或兼容环境变量；真实响应只存 `data_temp/`（git-ignored）；
 测试全部使用 Mock / synthetic 数据；每个 Phase 完成后更新 `PROJECT_STATE.md`。
 
 ## 已验证的真实 API 契约（摘要）

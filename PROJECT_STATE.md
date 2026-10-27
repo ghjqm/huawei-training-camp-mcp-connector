@@ -5,6 +5,8 @@
 
 ## Current Phase
 
+**Windows authentication persistence update — 2026-10-27:** Playwright's dedicated Edge profile produced successful `activityRecord:query` 200 requests before and after browser restart. Credentials were captured only from a user-opened Training Camp page and saved with Windows DPAPI. A fresh MCP subprocess with all `HTC_*` variables removed listed all 14 tools and completed a real data query. An actual synthetic-invalid-credential 401 triggered browser recovery and exactly one successful retry. Unit suite: 317 passed, 9 skipped. This real-account acceptance was performed on one Windows machine; each downloader must authorize their own account and verify data access.
+
 **v1.1 已发布（2026-08-17，git tag v1.1）**——14 个 MCP tool：训练域 9（列表/详情/摘要/指标/周期聚合/对比/周趋势/环比/健康检查）+ 恢复状态域 3（睡眠/静息心率/HRV）+ 训练能力域 2（运动能力评估/PB 个人纪录）；315 测试全绿；全程代码审计 + 压力测试轮完成（4 处 P1 容错缺口修复，性能基准毫秒级）；README 补 401 认证过期排障指引。
 
 （Phase 7 已于 2026-08-17 完成真实验收：test_mcp_client 12/12 passed；resting-hr 28 天 / hrv 28 天真实数据返回正常；Phase 8 亦于同日完成真实数据验收：performance 五指数+6 预测成绩 / pb 6 条纪录全部返回；**随后全程代码审计 + 压力测试轮完成**：修复 Phase 7/8 parser 四处容错缺口（NaN/inf 透传、超大 int OverflowError、非 str fieldName ValidationError、bool 时间戳伪造 1970）+ unicode 日过滤，test_robustness 扩展至 97 项（+61），315 passed；性能基准全绿：5000 条活动解析 52.6ms / 104 周趋势 53.2ms / 5000 晚睡眠 38.3ms / 730 天统计 2.7ms / 万级 PB 与预测成绩 ~20ms）

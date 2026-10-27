@@ -7,8 +7,8 @@
 
 设计原则：
 - 复用现有 client.py / parser.py，不重复实现 HTTP 或解析逻辑。
-- 认证信息（Authorization / x-client-id 等）只从环境变量读取，绝不写进代码 / 日志 / 测试。
-- 不实现登录、不猜测认证机制、不绕过任何访问控制。
+- 认证信息从兼容环境变量或 Windows DPAPI 本机凭证读取，不写进日志 / 测试。
+- 仅监听用户本人操作浏览器后发出的正常请求；不自动输入密码、不绕过访问控制。
 - 不连接数据库、不做 AI 分析、不做 Dashboard。
 """
 
@@ -21,6 +21,9 @@ from typing import Any
 from fastmcp import FastMCP
 
 from .analysis import compute_session_metrics, summarize_activity_detail
+from .auth.auth_manager import AuthManager
+from .auth.credential_store import CredentialStore
+from .auth.providers import BrowserSessionProvider
 from .period_analysis import aggregate_activity_period
 from .period_comparison import compare_training_periods
 from .trend_analysis import aggregate_weekly_trend, compute_weekly_trend_delta
@@ -124,10 +127,20 @@ def build_htc_headers() -> dict[str, str]:
 
 
 def create_htc_client(timeout: float = 30.0) -> HTCClient:
-    """根据本地配置（环境变量）创建一个 HTCClient。
+    """根据本地 DPAPI 凭证或兼容环境变量创建一个 HTCClient。
 
     测试时会被替换为返回 mock 客户端的版本，从而不访问真实网络。
     """
+    if os.name == "nt":
+        store = CredentialStore()
+        if store.exists():
+            auth_manager = AuthManager(
+                store=store,
+                browser_provider=BrowserSessionProvider(store),
+            )
+            # Validate availability at construction time, as the legacy path did.
+            auth_manager.get_headers()
+            return HTCClient(headers={}, timeout=timeout, auth_manager=auth_manager)
     return HTCClient(headers=build_htc_headers(), timeout=timeout)
 
 
@@ -551,9 +564,8 @@ def get_recent_activities(
         缺失字段为 None 或空列表。
 
     说明：
-        认证所需的请求头（Authorization / x-client-id 等）从环境变量
-        读取（见 build_htc_headers）；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证所需请求头优先从 Windows DPAPI 本机存储读取；未配置时兼容
+        HTC_* 环境变量。凭证由用户在专用浏览器中操作后捕获，不自动输入登录信息。
     """
     _validate_limit(limit)
     client = create_htc_client()
@@ -598,8 +610,8 @@ def get_activity_detail(
         以 HTCClientError 族异常清晰报告。
 
     说明：
-        认证信息从环境变量读取；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证信息优先从 Windows DPAPI 本机存储读取，未配置时兼容 HTC_* 环境变量。
+        登录和页面操作由用户本人完成；本项目不绕过访问控制。
     """
     client = create_htc_client()
     try:
@@ -638,8 +650,8 @@ def get_training_summary(
         以 HTCClientError 族异常清晰报告。
 
     说明：
-        认证信息从环境变量读取；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证信息优先从 Windows DPAPI 本机存储读取，未配置时兼容 HTC_* 环境变量。
+        登录和页面操作由用户本人完成；本项目不绕过访问控制。
     """
     client = create_htc_client()
     try:
@@ -897,8 +909,8 @@ def get_sleep_records(days: int = DEFAULT_SLEEP_DAYS) -> list[dict]:
         缺失字段为 None；无睡眠数据的夜晚不生成记录。
 
     说明：
-        认证信息从环境变量读取；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证信息优先从 Windows DPAPI 本机存储读取，未配置时兼容 HTC_* 环境变量。
+        登录和页面操作由用户本人完成；本项目不绕过访问控制。
     """
     _validate_lookback_days(days)
     client = create_htc_client()
@@ -934,8 +946,8 @@ def get_resting_heart_rate(days: int = DEFAULT_RECOVERY_DAYS) -> dict:
           daily 为空结构
 
     说明：
-        认证信息从环境变量读取；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证信息优先从 Windows DPAPI 本机存储读取，未配置时兼容 HTC_* 环境变量。
+        登录和页面操作由用户本人完成；本项目不绕过访问控制。
     """
     _validate_lookback_days(days)
     client = create_htc_client()
@@ -989,8 +1001,8 @@ def get_athletic_performance() -> dict:
         任何换算或重新计算；各指数量纲华为未公开文档，原样返回。
 
     说明：
-        认证信息从环境变量读取；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证信息优先从 Windows DPAPI 本机存储读取，未配置时兼容 HTC_* 环境变量。
+        登录和页面操作由用户本人完成；本项目不绕过访问控制。
     """
     client = create_htc_client()
     try:
@@ -1020,8 +1032,8 @@ def get_personal_bests(activity_type: str = "running") -> dict:
           无纪录时为空列表；缺失字段为 None。
 
     说明：
-        认证信息从环境变量读取；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证信息优先从 Windows DPAPI 本机存储读取，未配置时兼容 HTC_* 环境变量。
+        登录和页面操作由用户本人完成；本项目不绕过访问控制。
     """
     if not isinstance(activity_type, str) or not activity_type.strip():
         raise ValueError(
@@ -1063,8 +1075,8 @@ def get_hrv_stats(days: int = DEFAULT_RECOVERY_DAYS) -> dict:
           daily 为空结构
 
     说明：
-        认证信息从环境变量读取；本项目不实现登录，
-        也不猜测或绕过任何认证机制。
+        认证信息优先从 Windows DPAPI 本机存储读取，未配置时兼容 HTC_* 环境变量。
+        登录和页面操作由用户本人完成；本项目不绕过访问控制。
     """
     _validate_lookback_days(days)
     client = create_htc_client()
