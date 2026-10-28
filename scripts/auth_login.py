@@ -17,17 +17,27 @@ from src.huawei_health_mcp.auth.browser_session import (
     capture_from_context,
     profile_path,
 )
-from src.huawei_health_mcp.auth.credential_store import CredentialStore, StoredCredentials
+from src.huawei_health_mcp.auth.cookie_store import SessionCookieStore, export_cookies
+from src.huawei_health_mcp.auth.credential_store import (
+    CredentialStore,
+    StoredCredentials,
+    state_directory,
+)
+from src.huawei_health_mcp.auth.keeper import KeeperChannel
 
 _PHASE = "initialization"
 
 
 async def run(round_number: int) -> int:
     global _PHASE
+    if KeeperChannel(state_directory()).is_alive():
+        print("会话保活进程正在运行并占用专用浏览器；请直接在保活窗口中登录，或先关闭保活进程再运行本脚本。")
+        return 4
     _PHASE = "prepare profile"
     profile = profile_path()
     profile.mkdir(parents=True, exist_ok=True)
     captured = None
+    saved_cookies = 0
 
     async with async_playwright() as playwright:
         _PHASE = "launch dedicated Chromium profile"
@@ -55,12 +65,17 @@ async def run(round_number: int) -> int:
         else:
             capture_task.cancel()
             await asyncio.gather(capture_task, return_exceptions=True)
+        if captured:
+            # Keep the Huawei ID session cookies so later recoveries need no login.
+            _PHASE = "save session cookies"
+            saved_cookies = await export_cookies(context, SessionCookieStore())
         await context.close()
 
     if captured:
         headers, page_url = captured
         CredentialStore().save(StoredCredentials(headers=headers, page_url=page_url))
         print("本轮通过：已捕获成功训练请求，并把认证信息加密保存到当前 Windows 用户配置。")
+        print(f"已加密保存 {saved_cookies} 个华为登录 Cookie；会话仍有效时可用于后台恢复。")
         return 0
     print("本轮未通过：未观察到符合条件的目标请求；没有保存认证信息。")
     return 2

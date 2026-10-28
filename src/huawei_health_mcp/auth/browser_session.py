@@ -8,9 +8,10 @@ the existing connector requires.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from .credential_store import state_directory
 
 _TARGET_HOST = "hihealthbase-drcn.things.dbankcloud.cn"
 _TARGET_PATH = "/healthrunninggroup/v1/activityRecord:query"
@@ -67,10 +68,7 @@ def safe_page_url(url: str) -> str | None:
 
 def profile_path() -> Path:
     """Return the dedicated, user-local Edge profile directory."""
-    base = os.environ.get("LOCALAPPDATA")
-    if not base:
-        raise RuntimeError("LOCALAPPDATA is unavailable; browser recovery is Windows-only.")
-    return Path(base) / "HuaweiTrainingCampMCP" / "browser-profile"
+    return state_directory() / "browser-profile"
 
 
 async def capture_from_context(context, *, timeout_seconds: float, start_url: str | None = None):
@@ -107,6 +105,14 @@ async def capture_from_context(context, *, timeout_seconds: float, start_url: st
     if start_url:
         try:
             await page.goto(start_url, wait_until="domcontentloaded")
+            try:
+                # If SSO cookies are present, clicking the landing button triggers
+                # the token exchange and opens the dashboard without user prompts.
+                login_btn = page.locator("button.login-button")
+                await login_btn.wait_for(state="visible", timeout=3000)
+                await login_btn.click(timeout=2000)
+            except Exception:
+                pass
         except Exception:
             # The request listener remains active; a user may navigate manually.
             pass
@@ -115,3 +121,37 @@ async def capture_from_context(context, *, timeout_seconds: float, start_url: st
     finally:
         if pending:
             await asyncio.gather(*tuple(pending), return_exceptions=True)
+
+
+def attach_credential_listener(context, on_capture) -> None:
+    """Call ``on_capture(headers, page_url)`` for every successful target request.
+
+    Used by the long-running session keeper; values are passed to the callback
+    only and never logged here.
+    """
+    pending: set[asyncio.Task] = set()
+
+    async def inspect_response(response) -> None:
+        if response.status != 200 or not is_target_request(response.url):
+            return
+        try:
+            request = response.request
+            auth_headers = extract_auth_headers(await request.all_headers())
+            if not auth_headers:
+                return
+            try:
+                page_url = safe_page_url(request.frame.url)
+            except Exception:
+                page_url = None
+            result = on_capture(auth_headers, page_url)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            return
+
+    def on_response(response) -> None:
+        task = asyncio.create_task(inspect_response(response))
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    context.on("response", on_response)

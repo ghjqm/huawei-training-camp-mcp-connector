@@ -5,6 +5,10 @@
 
 ## Current Phase
 
+**Session persistence and keeper — 2026-10-28:** added DPAPI-encrypted, Huawei-domain cookie storage; background recovery before visible login; and an optional long-running dedicated Edge session keeper. MCP processes reuse credentials updated by the keeper or request a bounded refresh instead of opening another profile owner. Startup launchers use relative project paths and explicit `HTC_STATE_DIR` configuration. Validation: 329 passed, 9 skipped; no broken requirements; running keeper and authenticated live read verified on one Windows machine. Server-side expiry and user verification can still require manual reauthorization.
+
+**Cross-host state directory fix — 2026-10-28:** added optional absolute `HTC_STATE_DIR`, shared by DPAPI credentials and the isolated Edge profile. This lets a desktop app and a scheduled tunnel process use the same physical storage despite Windows AppData virtualization. Regression coverage uses two different host AppData roots with one shared directory; suite: 319 passed, 9 skipped.
+
 **Windows authentication persistence update — 2026-10-27:** Playwright's dedicated Edge profile produced successful `activityRecord:query` 200 requests before and after browser restart. Credentials were captured only from a user-opened Training Camp page and saved with Windows DPAPI. A fresh MCP subprocess with all `HTC_*` variables removed listed all 14 tools and completed a real data query. An actual synthetic-invalid-credential 401 triggered browser recovery and exactly one successful retry. Unit suite: 317 passed, 9 skipped. This real-account acceptance was performed on one Windows machine; each downloader must authorize their own account and verify data access.
 
 **v1.1 已发布（2026-08-17，git tag v1.1）**——14 个 MCP tool：训练域 9（列表/详情/摘要/指标/周期聚合/对比/周趋势/环比/健康检查）+ 恢复状态域 3（睡眠/静息心率/HRV）+ 训练能力域 2（运动能力评估/PB 个人纪录）；315 测试全绿；全程代码审计 + 压力测试轮完成（4 处 P1 容错缺口修复，性能基准毫秒级）；README 补 401 认证过期排障指引。

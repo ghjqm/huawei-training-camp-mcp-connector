@@ -15,6 +15,20 @@ class CredentialStoreError(RuntimeError):
     """Credential storage failed; exception text never includes secret values."""
 
 
+def state_directory() -> Path:
+    """Use one explicit directory across desktop and background Windows hosts."""
+    override = os.environ.get("HTC_STATE_DIR")
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            raise CredentialStoreError("HTC_STATE_DIR must be an absolute path.")
+        return path
+    base = os.environ.get("LOCALAPPDATA")
+    if not base:
+        raise CredentialStoreError("LOCALAPPDATA is unavailable.")
+    return Path(base) / "HuaweiTrainingCampMCP"
+
+
 @dataclass(frozen=True)
 class StoredCredentials:
     headers: dict[str, str]
@@ -26,10 +40,7 @@ class CredentialStore:
 
     def __init__(self, path: str | Path | None = None):
         if path is None:
-            base = os.environ.get("LOCALAPPDATA")
-            if not base:
-                raise CredentialStoreError("LOCALAPPDATA is unavailable.")
-            path = Path(base) / "HuaweiTrainingCampMCP" / "credentials.dpapi"
+            path = state_directory() / "credentials.dpapi"
         self.path = Path(path)
 
     def exists(self) -> bool:

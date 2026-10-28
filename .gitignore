@@ -30,6 +30,8 @@ data/*.json
 auth_data/
 browser-profile/
 *.dpapi
+keeper.heartbeat
+keeper.refresh-request
 
 # Stage 5 real-API temp data (personal workout data, never commit)
 data_temp/

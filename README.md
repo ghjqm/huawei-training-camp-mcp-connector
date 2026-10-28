@@ -4,7 +4,7 @@
 直接查询并分析你的训练记录、睡眠、心率、跑力，像和一个懂训练的教练聊天一样。
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)]()
-[![Tests](https://img.shields.io/badge/tests-317%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-329%20passed-brightgreen)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **安全边界**：本项目不绕过验证码、二次验证或其他访问控制。用户本人
@@ -119,6 +119,40 @@ Huawei Training Camp 页面，并查看训练记录。不要把密码、验证�
 
 原来的 `HTC_AUTHORIZATION` / `HTC_CLIENT_ID` 环境变量仍作为兼容回退方式，
 可在无法使用 DPAPI 的系统上继续使用。
+
+若桌面应用与 Windows 后台任务存在 AppData 隔离，可用 `HTC_STATE_DIR` 指定同一个
+绝对目录。该目录同时保存 `credentials.dpapi` 和 `browser-profile/`；首次登录脚本、
+本机 MCP 和后台任务必须使用相同的值。未设置时仍使用原来的 LocalAppData 目录。
+
+### 可选：保持登录会话
+
+首次登录脚本现在会把华为域名的 Cookie 加密保存到同一目录的
+`session-cookies.dpapi`。凭证失效时，连接器先尝试无窗口恢复；无法恢复时再打开
+专用浏览器，供用户重新授权。服务端会话失效、验证码或二次验证仍需本人完成。
+
+需要持续运行时，在项目目录启动会话保活：
+
+```powershell
+.\scripts\start_session_keeper.cmd --minimized --interval-minutes 15
+```
+
+保活程序保持一份专用 Edge 会话，定期加载训练营页面，并响应 MCP 的凭证刷新
+请求。它运行期间由它独占该浏览器配置；MCP 会请求它刷新，不另开第二个浏览器。
+需要登录时在保活窗口中完成。停止保活后，才可重新运行 `scripts.auth_login`。
+已经有有效会话时，可用 `--headless` 替换 `--minimized` 在无窗口模式运行；此模式
+无法手动登录，重新授权时应停止进程并以可见模式启动。
+
+可选的 Windows 登录启动快捷方式：
+
+```powershell
+powershell.exe -NoProfile -File scripts\install_keeper_autostart.ps1
+# 移除该快捷方式：
+powershell.exe -NoProfile -File scripts\install_keeper_autostart.ps1 -Remove
+```
+
+这会在当前用户的启动文件夹创建快捷方式，不启动 MCP 隧道。若设置了
+`HTC_STATE_DIR`，须让登录脚本、保活程序和 MCP 都使用同一值，并将它配置为用户
+环境变量供登录启动进程继承。启用保活不需要更换现有状态目录。
 
 ### 第 4 步：连通性自检
 
@@ -291,7 +325,7 @@ JSON 配置（部分客户端直接编辑配置文件；适用于完成第 3 步
 
 ```powershell
 # 运行全部测试（全部 Mock，不联网、不需要凭证）
-.\.venv\Scripts\python.exe -m pytest -q      # 当前 317 passed
+.\.venv\Scripts\python.exe -m pytest -q      # 当前 329 passed
 ```
 
 ```
@@ -308,6 +342,9 @@ src/huawei_health_mcp/
 └─ server.py             # FastMCP 服务与工具接线
 scripts/auth_login.py      # 用户手动操作专用 Edge，并安全保存成功请求凭证
 scripts/auth_status.py     # 检查本地 DPAPI 凭证是否可解密
+scripts/session_keeper.py  # 保持专用浏览器会话并响应刷新请求
+scripts/start_session_keeper.cmd # 从任意工作目录启动保活
+scripts/install_keeper_autostart.ps1 # 当前用户登录启动快捷方式（可移除）
 scripts/test_dpapi_mcp.py  # 清除子进程 HTC_* 后验证 DPAPI-backed MCP 数据调用
 scripts/test_auto_recovery.py # 用临时无效凭证验证真实 API 的单次 401 恢复
 scripts/test_real_htc.py   # 人工真实请求脚本（十一模式，环境变量兼容）

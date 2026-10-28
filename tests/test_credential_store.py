@@ -7,6 +7,22 @@ from src.huawei_health_mcp.auth.credential_store import (
     CredentialStoreError,
     StoredCredentials,
 )
+from src.huawei_health_mcp.auth.browser_session import profile_path
+
+
+def test_shared_state_overrides_host_appdata(monkeypatch, tmp_path):
+    shared = tmp_path / "shared"
+    monkeypatch.setenv("HTC_STATE_DIR", str(shared))
+    for host in ("desktop-package", "scheduled-task"):
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / host))
+        assert CredentialStore().path == shared / "credentials.dpapi"
+        assert profile_path() == shared / "browser-profile"
+
+
+def test_shared_state_rejects_relative_path(monkeypatch):
+    monkeypatch.setenv("HTC_STATE_DIR", "relative-state")
+    with pytest.raises(CredentialStoreError, match="absolute"):
+        CredentialStore()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI only")
